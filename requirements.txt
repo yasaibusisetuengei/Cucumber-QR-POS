@@ -1,5 +1,5 @@
 streamlit
-pandas
-pyzbar
-Pillow
 st-gsheets-connection
+pandas
+numpy
+opencv-python-headless
