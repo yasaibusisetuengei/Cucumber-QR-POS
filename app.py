@@ -4,10 +4,27 @@ import pandas as pd
 import datetime
 import cv2
 import numpy as np
+import urllib.request
 
 # --- ページ設定とデータベース接続 ---
 st.set_page_config(page_title="🥒 キュウリ管理＆判定システム", layout="wide")
 conn = st.connection("gsheets", type=GSheetsConnection)
+
+# ==========================================
+# 🌟 GitHub サンプル画像のURL設定
+# ご自身のリポジトリURLに書き換えてください
+# ==========================================
+SAMPLE1_URL = "https://raw.githubusercontent.com/YOUR_USERNAME/YOUR_REPO/main/sample1.png"
+SAMPLE2_URL = "https://raw.githubusercontent.com/YOUR_USERNAME/YOUR_REPO/main/sample2.jpg"
+
+def get_image_bytes_from_url(url):
+    try:
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req) as response:
+            return response.read()
+    except Exception as e:
+        st.error(f"サンプル画像の読み込みに失敗しました: {e}")
+        return None
 
 # ==========================================
 # 1. 階級判定用の定数設定
@@ -33,7 +50,6 @@ def load_tags():
 
 def load_items():
     df = conn.read(worksheet="Items", ttl=0, dtype=str)
-    # 🌟 修正: 数値列は0.0で、それ以外の文字列表は空文字("")で埋めるように修正
     for col in ['weight', 'length', 'thickness', 'curve']:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
@@ -83,11 +99,21 @@ def update_item_record(item_code, **kwargs):
         for key, val in kwargs.items():
             if key not in items_df.columns:
                 items_df[key] = ""
-            # 🌟 修正: Pandasの厳格な型チェックを回避するため、object型に変換してから代入
             items_df[key] = items_df[key].astype(object)
             items_df.loc[idx, key] = val
             
         conn.update(worksheet="Items", data=items_df)
+
+# 🌟 条件③: QRコード使いまわしのためのリンク解除関数
+def unbind_tag(tag_id):
+    tags_df = load_tags()
+    tags_df['tag_id'] = tags_df['tag_id'].astype(str)
+    idx = tags_df[tags_df['tag_id'] == str(tag_id)].index
+    if not idx.empty:
+        tags_df.loc[idx, 'current_item_code'] = ""
+        conn.update(worksheet="Tags", data=tags_df)
+        return True
+    return False
 
 def read_qr_from_bytes(file_bytes):
     img = cv2.imdecode(file_bytes, 1)
@@ -244,15 +270,23 @@ tab1, tab2 = st.tabs(["🌱 生育記録", "🥒 収穫・階級判定"])
 with tab1:
     st.header("🌱 生育記録 (QRスキャン)")
     
-    img_source_qr = st.radio("入力方法", ["カメラ", "アップロード"], key="qr_radio")
+    # 🌟 条件②: サンプル画像選択を追加
+    img_source_qr = st.radio("入力方法", ["カメラ", "アップロード", "サンプル画像 (sample1)"], key="qr_radio")
+    
+    file_bytes_qr = None
     if img_source_qr == "カメラ":
         qr_img = st.camera_input("QRコードを撮影", key="qr_camera")
-    else:
+        if qr_img: file_bytes_qr = np.asarray(bytearray(qr_img.read()), dtype=np.uint8)
+    elif img_source_qr == "アップロード":
         qr_img = st.file_uploader("QRコード画像を選択", type=["jpg", "jpeg", "png"], key="qr_upload")
-    
-    if qr_img is not None:
-        file_bytes = np.asarray(bytearray(qr_img.read()), dtype=np.uint8)
-        tag_id = read_qr_from_bytes(file_bytes)
+        if qr_img: file_bytes_qr = np.asarray(bytearray(qr_img.read()), dtype=np.uint8)
+    else:
+        st.info("GitHub上のサンプル画像 (sample1.png) を使用します。")
+        raw_data = get_image_bytes_from_url(SAMPLE1_URL)
+        if raw_data: file_bytes_qr = np.asarray(bytearray(raw_data), dtype=np.uint8)
+
+    if file_bytes_qr is not None:
+        tag_id = read_qr_from_bytes(file_bytes_qr)
         
         if tag_id:
             st.success(f"🏷️ タグを認識しました: {tag_id}")
@@ -278,17 +312,15 @@ with tab1:
                     sprout = st.date_input("発芽日", value=pd.to_datetime(item_data.get('sprout_date')).date() if item_data.get('sprout_date') else None)
                 with col_b:
                     bloom = st.date_input("開花日", value=pd.to_datetime(item_data.get('bloom_date')).date() if item_data.get('bloom_date') else None)
-                    weight = st.number_input("重さ (g)", value=float(item_data.get('weight', 0.0)))
+                    # 🌟 条件①: 重さ入力欄は「収穫・階級判定」へ移動のため削除
                 
                 comment = st.text_area("コメント（自由入力）", value=str(item_data.get('comment', '')))
                 
                 if st.form_submit_button("記録を更新する"):
-                    # 🌟 修正: 型を明示的に指定して更新関数に渡す
                     update_item_record(
                         item_code, 
                         sprout_date=sprout.strftime("%Y-%m-%d") if sprout else "",
                         bloom_date=bloom.strftime("%Y-%m-%d") if bloom else "",
-                        weight=float(weight),
                         area_number=str(area),
                         comment=str(comment)
                     )
@@ -302,28 +334,38 @@ with tab2:
     
     col1, col2 = st.columns(2)
     with col1:
-        img_source_grade = st.radio("画像入力", ["カメラ", "アップロード"], key="grade_radio")
+        # 🌟 条件②: サンプル画像選択を追加
+        img_source_grade = st.radio("画像入力", ["カメラ", "アップロード", "サンプル画像 (sample2)"], key="grade_radio")
+        
+        file_bytes_grade = None
         if img_source_grade == "カメラ":
             c_img = st.camera_input("キュウリを撮影（A4マーカー枠＆QRコード必須）", key="grade_camera")
-        else:
+            if c_img: file_bytes_grade = np.asarray(bytearray(c_img.read()), dtype=np.uint8)
+        elif img_source_grade == "アップロード":
             c_img = st.file_uploader("画像を選択", type=["jpg", "jpeg", "png"], key="grade_upload")
+            if c_img: file_bytes_grade = np.asarray(bytearray(c_img.read()), dtype=np.uint8)
+        else:
+            st.info("GitHub上のサンプル画像 (sample2.jpg) を使用します。")
+            raw_data = get_image_bytes_from_url(SAMPLE2_URL)
+            if raw_data: file_bytes_grade = np.asarray(bytearray(raw_data), dtype=np.uint8)
+
+        # 🌟 条件①: 生育記録から移動してきた「重さ (g)」入力欄
+        harvest_weight = st.number_input("重さ (g)", min_value=0.0, step=1.0, value=100.0, key="harvest_weight")
         
         grade_btn = st.button("📏 計測＆DB登録", type="primary")
 
     with col2:
-        if grade_btn and c_img is not None:
-            file_bytes = np.asarray(bytearray(c_img.read()), dtype=np.uint8)
-            cv_img = cv2.imdecode(file_bytes, 1)
+        if grade_btn and file_bytes_grade is not None:
+            cv_img = cv2.imdecode(file_bytes_grade, 1)
             cv_img_rgb = cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB)
             
-            # 計測処理の実行
             res_img, html, l_cm, t_cm, c_cm, grade_str, warped = process_measurement(cv_img_rgb)
             
             if res_img is not None: st.image(res_img, channels="RGB")
             st.markdown(html, unsafe_allow_html=True)
             
             if l_cm is not None:
-                tag_id = read_qr_from_bytes(file_bytes)
+                tag_id = read_qr_from_bytes(file_bytes_grade)
                 
                 if not tag_id and warped is not None:
                     detector = cv2.QRCodeDetector()
@@ -333,13 +375,27 @@ with tab2:
                 
                 if tag_id:
                     item_code = get_tag_info(tag_id)
-                    # 🌟 修正: 小数はfloat、文字列はstrに明示的に変換して渡す
+                    # 重さ(weight)も一緒に登録
                     if item_code:
-                        update_item_record(item_code, length=float(l_cm), thickness=float(t_cm), curve=float(c_cm), grade=str(grade_str))
-                        st.success(f"✅ タグ【{tag_id}】を検出し、階級データ（{grade_str}）をデータベースに記録しました！")
+                        update_item_record(item_code, length=float(l_cm), thickness=float(t_cm), curve=float(c_cm), grade=str(grade_str), weight=float(harvest_weight))
+                        st.success(f"✅ タグ【{tag_id}】を検出し、階級（{grade_str}）・重さ（{harvest_weight}g）を自動記録しました！")
                     else:
                         item_code = register_new_item(tag_id)
-                        update_item_record(item_code, length=float(l_cm), thickness=float(t_cm), curve=float(c_cm), grade=str(grade_str))
-                        st.success(f"✅ 新規タグ【{tag_id}】を登録し、階級データ（{grade_str}）を記録しました！")
+                        update_item_record(item_code, length=float(l_cm), thickness=float(t_cm), curve=float(c_cm), grade=str(grade_str), weight=float(harvest_weight))
+                        st.success(f"✅ 新規タグ【{tag_id}】を登録し、階級（{grade_str}）・重さ（{harvest_weight}g）を記録しました！")
                 else:
-                    st.error("⚠️ 画像からQRコードを検出できませんでした。計測は完了しましたが、データベースには登録されていません。QRコードがはっきり写るように撮影してください。")
+                    st.error("⚠️ 画像からQRコードを検出できませんでした。計測は完了しましたが、データベースには登録されていません。")
+
+    # 🌟 条件③: アコーディオン内のリンク解除ボタン
+    st.divider()
+    with st.expander("🔗 QRコードの使いまわし（タグのリンク解除）"):
+        st.write("QRコードを再利用して新しいキュウリに使用する場合、現在のアイテムとの紐づけを解除します。")
+        unbind_target_tag = st.text_input("リンク解除するQRタグ番号 (例: 413562)", key="unbind_tag_input")
+        if st.button("🔓 リンク解除を実行", type="secondary"):
+            if unbind_target_tag:
+                if unbind_tag(unbind_target_tag):
+                    st.success(f"タグ【{unbind_target_tag}】のリンクを解除しました！次回のQRスキャンで新しいアイテムコードが割り当てられます。")
+                else:
+                    st.warning(f"タグ【{unbind_target_tag}】が見つからないか、すでに解除されています。")
+            else:
+                st.error("タグ番号を入力してください。")
