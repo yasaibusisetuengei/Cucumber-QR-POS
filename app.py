@@ -26,10 +26,12 @@ def get_image_bytes_from_url(url):
         return None
 
 # ==========================================
-# 🌟 Session State の初期化 (2ステップ動作用)
+# 🌟 Session State の初期化
 # ==========================================
 if "grade_result" not in st.session_state:
     st.session_state.grade_result = None
+if "processed_qrs" not in st.session_state:
+    st.session_state.processed_qrs = set()
 
 def clear_grade_result():
     st.session_state.grade_result = None
@@ -50,14 +52,15 @@ COLOR_CURVE_LINE = (255, 0, 0)
 COLOR_THICKNESS = (255, 0, 255)
 
 # ==========================================
-# 2. データベース操作関数
+# 2. データベース操作関数 (APIエラー対策版)
 # ==========================================
 def load_tags():
-    df = conn.read(worksheet="Tags", ttl=0, dtype=str)
+    # ttl=600でキャッシュを有効化（無駄なAPI通信を削減）
+    df = conn.read(worksheet="Tags", ttl=600, dtype=str)
     return df.fillna("")
 
 def load_items():
-    df = conn.read(worksheet="Items", ttl=0, dtype=str)
+    df = conn.read(worksheet="Items", ttl=600, dtype=str)
     for col in ['weight', 'length', 'thickness', 'curve']:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
@@ -96,6 +99,7 @@ def register_new_item(tag_id):
     
     conn.update(worksheet="Tags", data=tags_df)
     conn.update(worksheet="Items", data=items_df)
+    st.cache_data.clear() # DB書き込み後にキャッシュをクリアして最新状態へ
     return item_code
 
 def update_item_record(item_code, **kwargs):
@@ -111,6 +115,7 @@ def update_item_record(item_code, **kwargs):
             items_df.loc[idx, key] = val
             
         conn.update(worksheet="Items", data=items_df)
+        st.cache_data.clear() # DB書き込み後にキャッシュをクリア
 
 def unbind_tag(tag_id):
     tags_df = load_tags()
@@ -119,6 +124,7 @@ def unbind_tag(tag_id):
     if not idx.empty:
         tags_df.loc[idx, 'current_item_code'] = ""
         conn.update(worksheet="Tags", data=tags_df)
+        st.cache_data.clear()
         return True
     return False
 
@@ -269,6 +275,25 @@ def process_measurement(image):
     return res_img, html, length_cm, avg_thick_cm, curve_cm, display_grade, warped
 
 # ==========================================
+# 🌟 入力更新用のコールバック関数
+# ==========================================
+def update_area_cb(code):
+    val = st.session_state[f"area_{code}"]
+    update_item_record(code, area_number=str(val))
+    st.toast("✅ エリア番号を更新しました")
+
+def update_date_cb(code, field_name, label, key):
+    val = st.session_state[key]
+    date_str = val.strftime("%Y-%m-%d") if val else ""
+    update_item_record(code, **{field_name: date_str})
+    st.toast(f"✅ {label}を更新しました")
+
+def update_comment_cb(code):
+    val = st.session_state[f"comment_{code}"]
+    update_item_record(code, comment=str(val))
+    st.toast("✅ コメントを更新しました")
+
+# ==========================================
 # 4. Streamlit UI 構成 (タブ切り替え)
 # ==========================================
 tab1, tab2 = st.tabs(["🌱 生育記録", "🥒 収穫・階級判定"])
@@ -320,26 +345,24 @@ with tab1:
             today_date = datetime.date.today()
             today_str = today_date.strftime("%Y-%m-%d")
             
-            # 🌟 QR読み込み時に瞬時にDBを更新するロジック
-            if today_str in [s_date_str, b_date_str, h_date_str]:
-                st.info("✅ 本日読み込み済みです。")
-            else:
-                updated = False
-                if not s_date_str:
-                    s_date_str, updated = today_str, True
-                elif not b_date_str:
-                    b_date_str, updated = today_str, True
-                elif not h_date_str:
-                    h_date_str, updated = today_str, True
-                
-                if updated:
-                    update_item_record(
-                        item_code, 
-                        sprout_date=s_date_str,
-                        bloom_date=b_date_str,
-                        harvest_date=h_date_str
-                    )
-                    st.success("🌱 スキャンを検知し、自動でデータベースを更新しました！")
+            # 🌟 初回スキャン時のみ自動更新を実行（ループ防止）
+            if tag_id not in st.session_state.processed_qrs:
+                if today_str in [s_date_str, b_date_str, h_date_str]:
+                    st.info("✅ 本日読み込み済みです。")
+                else:
+                    updated = False
+                    if not s_date_str:
+                        s_date_str, updated = today_str, True
+                    elif not b_date_str:
+                        b_date_str, updated = today_str, True
+                    elif not h_date_str:
+                        h_date_str, updated = today_str, True
+                    
+                    if updated:
+                        update_item_record(item_code, sprout_date=s_date_str, bloom_date=b_date_str, harvest_date=h_date_str)
+                        st.success("🌱 スキャンを検知し、自動でデータベースを更新しました！")
+                # 処理済みフラグを立てて、消去ボタン後の再自動登録を防ぐ
+                st.session_state.processed_qrs.add(tag_id)
 
             def parse_date(d_str):
                 if d_str:
@@ -353,58 +376,50 @@ with tab1:
             b_date_val = parse_date(b_date_str)
             h_date_val = parse_date(h_date_str)
             
-            # 🌟 「記録を更新する」ボタンを廃止し、リアルタイム更新に変更
             st.write(f"📝 編集対象コード: `{item_code}`")
             
             area_opts = [str(i) for i in range(1, 13)]
             current_area = clean_date_str(item_data.get('area_number', "1"))
             if current_area not in area_opts: current_area = "1"
             
-            # エリア番号の即時更新
-            area = st.selectbox("試験エリア番号", area_opts, index=area_opts.index(current_area))
-            if area != current_area:
-                update_item_record(item_code, area_number=str(area))
-                st.toast("✅ エリア番号を保存しました")
-                st.rerun()
+            # コールバックによる入力即時反映
+            st.selectbox(
+                "試験エリア番号", area_opts, index=area_opts.index(current_area),
+                key=f"area_{item_code}", on_change=update_area_cb, args=(item_code,)
+            )
             
-            # 日付入力と消去ボタン
             col_a, col_b, col_c = st.columns(3)
             with col_a:
-                sprout = st.date_input("発芽日", value=s_date_val)
-                if sprout != s_date_val:
-                    update_item_record(item_code, sprout_date=sprout.strftime("%Y-%m-%d") if sprout else "")
-                    st.toast("✅ 発芽日を保存しました")
-                    st.rerun()
-                if st.button("🗑️ 発芽日を消去", key="clear_s", use_container_width=True):
+                st.date_input(
+                    "発芽日", value=s_date_val, key=f"s_{item_code}", 
+                    on_change=update_date_cb, args=(item_code, "sprout_date", "発芽日", f"s_{item_code}")
+                )
+                if st.button("🗑️ 発芽日を消去", key=f"clr_s_{item_code}", use_container_width=True):
                     update_item_record(item_code, sprout_date="")
                     st.rerun()
                     
             with col_b:
-                bloom = st.date_input("開花日", value=b_date_val)
-                if bloom != b_date_val:
-                    update_item_record(item_code, bloom_date=bloom.strftime("%Y-%m-%d") if bloom else "")
-                    st.toast("✅ 開花日を保存しました")
-                    st.rerun()
-                if st.button("🗑️ 開花日を消去", key="clear_b", use_container_width=True):
+                st.date_input(
+                    "開花日", value=b_date_val, key=f"b_{item_code}", 
+                    on_change=update_date_cb, args=(item_code, "bloom_date", "開花日", f"b_{item_code}")
+                )
+                if st.button("🗑️ 開花日を消去", key=f"clr_b_{item_code}", use_container_width=True):
                     update_item_record(item_code, bloom_date="")
                     st.rerun()
                     
             with col_c:
-                harvest = st.date_input("収穫日", value=h_date_val)
-                if harvest != h_date_val:
-                    update_item_record(item_code, harvest_date=harvest.strftime("%Y-%m-%d") if harvest else "")
-                    st.toast("✅ 収穫日を保存しました")
-                    st.rerun()
-                if st.button("🗑️ 収穫日を消去", key="clear_h", use_container_width=True):
+                st.date_input(
+                    "収穫日", value=h_date_val, key=f"h_{item_code}", 
+                    on_change=update_date_cb, args=(item_code, "harvest_date", "収穫日", f"h_{item_code}")
+                )
+                if st.button("🗑️ 収穫日を消去", key=f"clr_h_{item_code}", use_container_width=True):
                     update_item_record(item_code, harvest_date="")
                     st.rerun()
             
-            # コメントの即時更新
-            comment = st.text_area("コメント（自由入力）", value=clean_date_str(item_data.get('comment', '')))
-            if comment != clean_date_str(item_data.get('comment', '')):
-                update_item_record(item_code, comment=str(comment))
-                st.toast("✅ コメントを保存しました")
-                st.rerun()
+            st.text_area(
+                "コメント（自由入力）", value=clean_date_str(item_data.get('comment', '')),
+                key=f"comment_{item_code}", on_change=update_comment_cb, args=(item_code,)
+            )
                 
         else:
             st.error("QRコードを検出できませんでした。別の画像を選択するか、再撮影してください。")
