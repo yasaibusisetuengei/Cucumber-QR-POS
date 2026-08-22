@@ -294,7 +294,6 @@ with tab1:
         if raw_data: file_bytes_qr = np.asarray(bytearray(raw_data), dtype=np.uint8)
 
     if file_bytes_qr is not None:
-        # 🌟 条件①: アップロード・サンプルの場合に画像を表示
         if img_source_qr in ["アップロード", "サンプル画像 (sample1)"]:
             cv_img_qr = cv2.imdecode(file_bytes_qr, 1)
             st.image(cv2.cvtColor(cv_img_qr, cv2.COLOR_BGR2RGB), use_container_width=True)
@@ -346,7 +345,6 @@ with tab2:
     
     col1, col2 = st.columns(2)
     with col1:
-        # 画像入力が変わったら判定結果をリセットする
         img_source_grade = st.radio("画像入力", ["カメラ", "アップロード", "サンプル画像 (sample2)"], key="grade_radio", on_change=clear_grade_result)
         
         file_bytes_grade = None
@@ -361,7 +359,11 @@ with tab2:
             raw_data = get_image_bytes_from_url(SAMPLE2_URL)
             if raw_data: file_bytes_grade = np.asarray(bytearray(raw_data), dtype=np.uint8)
 
-        # 🌟 条件②: まず「計測」だけを行うボタン
+        # 🌟 修正: アップロード・サンプルの場合にプレビュー画像を表示
+        if file_bytes_grade is not None and img_source_grade in ["アップロード", "サンプル画像 (sample2)"]:
+            cv_img_grade_preview = cv2.imdecode(file_bytes_grade, 1)
+            st.image(cv2.cvtColor(cv_img_grade_preview, cv2.COLOR_BGR2RGB), use_container_width=True)
+
         grade_btn = st.button("📏 計測して階級を判定", type="primary")
 
     with col2:
@@ -380,7 +382,6 @@ with tab2:
                     data, _, _ = detector.detectAndDecode(warped_bgr)
                     tag_id = str(data).strip() if data else None
             
-            # 計測結果をSession Stateに保存
             st.session_state.grade_result = {
                 'res_img': res_img,
                 'html': html,
@@ -391,7 +392,6 @@ with tab2:
                 'tag_id': tag_id
             }
 
-        # 🌟 判定結果が保存されていれば表示し、「重さ入力とDB登録」のフォームを出す
         if st.session_state.grade_result is not None:
             res = st.session_state.grade_result
             
