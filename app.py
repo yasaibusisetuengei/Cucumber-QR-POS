@@ -1,38 +1,47 @@
 import streamlit as st
-import pandas as pd
-from pyzbar.pyzbar import decode
-from PIL import Image
-import datetime
 from streamlit_gsheets import GSheetsConnection
+import pandas as pd
+import datetime
+import cv2
+import numpy as np
+from typing import Tuple, Optional
 
-# ページ設定
-st.set_page_config(page_title="育成管理システム", layout="wide")
+# --- ページ設定とデータベース接続 ---
+st.set_page_config(page_title="🥒 キュウリ管理＆判定システム", layout="wide")
+conn = st.connection("gsheets", type=GSheetsConnection)
 
-# --- Googleスプレッドシート接続 ---
-try:
-    conn = st.connection("gsheets", type=GSheetsConnection)
-except Exception as e:
-    st.error("スプレッドシートへの接続設定が完了していません。Secretsの設定を確認してください。")
-    st.stop()
+# ==========================================
+# 1. 階級判定用の定数設定
+# ==========================================
+A4_W_MM, A4_H_MM = 297.0, 210.0
+PPM = 3.0
+A4_W_PX, A4_H_PX = int(A4_W_MM * PPM), int(A4_H_MM * PPM)
+MARKER_OFFSET_MM = 15.0
+OFFSET_PX = int(MARKER_OFFSET_MM * PPM)
+DIST_5CM_PX = 50.0 * PPM
 
+COLOR_CONTOUR = (0, 255, 0)
+COLOR_TABLE_LINE = (255, 255, 0)
+COLOR_CURVE_LINE = (255, 0, 0)
+COLOR_THICKNESS = (255, 0, 255)
+COLOR_ERROR_TEXT = (0, 0, 255)
+
+TOLERANCE_PCT_LENGTH, TOLERANCE_PCT_THICKNESS, TOLERANCE_PCT_CURVE = 15.0, 20.0, 30.0
+MIN_TOLERANCE_CM = 0.5
+
+# ==========================================
+# 2. データベース操作関数
+# ==========================================
 def load_tags():
-    # ttl=0 でキャッシュを無効化し、常に最新データを取得
-    return conn.read(worksheet="Tags", ttl=0)
-
-def load_items():
-    return conn.read(worksheet="Items", ttl=0)
-
-# --- データ操作関数 ---
-def load_tags():
-    # dtype=str で強制的に文字として読み込み、勝手な数値変換を防ぐ
     df = conn.read(worksheet="Tags", ttl=0, dtype=str)
-    return df.fillna("") # 空欄を空文字に変換
+    return df.fillna("")
 
 def load_items():
     df = conn.read(worksheet="Items", ttl=0, dtype=str)
-    # 重さ（weight）だけは数値として扱う
-    if 'weight' in df.columns:
-        df['weight'] = pd.to_numeric(df['weight'], errors='coerce').fillna(0.0)
+    # 数値計算する列の安全処理
+    for col in ['weight', 'length', 'thickness', 'curve']:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
     return df.fillna("")
 
 def get_tag_info(tag_id):
@@ -41,30 +50,15 @@ def get_tag_info(tag_id):
     match = tags_df[tags_df['tag_id'] == str(tag_id)]
     if not match.empty:
         code = match.iloc[0]['current_item_code']
-        if code == "":
-            return None
-        return str(code)
-    return None
-
-def get_item_info(item_code):
-    items_df = load_items()
-    match = items_df[items_df['item_code'] == str(item_code)]
-    if not match.empty:
-        row = match.iloc[0]
-        return {
-            "sprout_date": row['sprout_date'] if row['sprout_date'] != "" else None,
-            "bloom_date": row['bloom_date'] if row['bloom_date'] != "" else None,
-            "weight": row['weight']
-        }
+        if code != "": return str(code)
     return None
 
 def register_new_item(tag_id):
     tags_df = load_tags()
     items_df = load_items()
-    
     tags_df['tag_id'] = tags_df['tag_id'].astype(str)
-    item_code = f"ITEM-{datetime.datetime.now().strftime('%Y%m%d-%H%M%S')}"
     
+    item_code = f"ITEM-{datetime.datetime.now().strftime('%Y%m%d-%H%M%S')}"
     if str(tag_id) in tags_df['tag_id'].values:
         tags_df.loc[tags_df['tag_id'] == str(tag_id), 'current_item_code'] = item_code
     else:
@@ -72,130 +66,276 @@ def register_new_item(tag_id):
         tags_df = pd.concat([tags_df, new_tag], ignore_index=True)
         
     new_item = pd.DataFrame({
-        'item_code': [item_code], 
-        'sprout_date': [""], 
-        'bloom_date': [""], 
-        'weight': [0.0]
+        'item_code': [item_code], 'sprout_date': [""], 'bloom_date': [""], 'weight': [0.0],
+        'area_number': ["1"], 'comment': [""], 'grade': [""], 'length': [0.0], 'thickness': [0.0], 'curve': [0.0]
     })
     items_df = pd.concat([items_df, new_item], ignore_index=True)
     
     conn.update(worksheet="Tags", data=tags_df)
     conn.update(worksheet="Items", data=items_df)
-    
     return item_code
 
-def update_item_info(item_code, sprout, bloom, weight):
+def update_item_record(item_code, **kwargs):
     items_df = load_items()
     items_df['item_code'] = items_df['item_code'].astype(str)
-    
     idx = items_df[items_df['item_code'] == str(item_code)].index
     if not idx.empty:
-        items_df.loc[idx, 'sprout_date'] = sprout if sprout else ""
-        items_df.loc[idx, 'bloom_date'] = bloom if bloom else ""
-        items_df.loc[idx, 'weight'] = float(weight)
+        for key, val in kwargs.items():
+            items_df.loc[idx, key] = val
         conn.update(worksheet="Items", data=items_df)
 
-def clear_tag_link(tag_id):
-    tags_df = load_tags()
-    tags_df['tag_id'] = tags_df['tag_id'].astype(str)
+def read_qr_from_bytes(file_bytes):
+    img = cv2.imdecode(file_bytes, 1)
+    detector = cv2.QRCodeDetector()
+    data, _, _ = detector.detectAndDecode(img)
+    return str(data).strip() if data else None
+
+# ==========================================
+# 3. OpenCV 画像処理・計測関数
+# ==========================================
+def detect_and_warp(image: np.ndarray):
+    aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
+    parameters = cv2.aruco.DetectorParameters()
+    detector = cv2.aruco.ArucoDetector(aruco_dict, parameters)
+    corners, ids, _ = detector.detectMarkers(image)
+    if ids is None or len(ids) < 4:
+        image = cv2.flip(image, 1)
+        corners, ids, _ = detector.detectMarkers(image)
+    if ids is None or len(ids) < 4:
+        return None, "マーカーを探しています...（A4ボードの四隅を写してください）"
+    centers = np.array([corner[0].mean(axis=0) for corner in corners])
+    sorted_x = centers[np.argsort(centers[:, 0])]
+    left_pts, right_pts = sorted_x[:2], sorted_x[2:]
+    tl, bl = left_pts[np.argsort(left_pts[:, 1])]
+    tr, br = right_pts[np.argsort(right_pts[:, 1])]
+    src_pts = np.array([tl, tr, br, bl], dtype=np.float32)
+    dst_pts = np.array([
+        [OFFSET_PX, OFFSET_PX], [A4_W_PX - OFFSET_PX, OFFSET_PX],
+        [A4_W_PX - OFFSET_PX, A4_H_PX - OFFSET_PX], [OFFSET_PX, A4_H_PX - OFFSET_PX]
+    ], dtype=np.float32)
+    M = cv2.getPerspectiveTransform(src_pts, dst_pts)
+    warped = cv2.warpPerspective(image, M, (A4_W_PX, A4_H_PX))
+    return warped, None
+
+def extract_cucumber_contour(warped_img: np.ndarray):
+    hsv = cv2.cvtColor(warped_img, cv2.COLOR_RGB2HSV)
+    lower_green, upper_green = np.array([35, 40, 40]), np.array([85, 255, 255])
+    mask = cv2.inRange(hsv, lower_green, upper_green)
+    kernel = np.ones((5, 5), np.uint8)
+    mask = cv2.morphologyEx(cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel), cv2.MORPH_CLOSE, kernel)
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours: return None, "キュウリが検出できません。"
+    return max(contours, key=cv2.contourArea), None
+
+def calculate_length(contour):
+    approx = cv2.approxPolyDP(contour, 0.01 * cv2.arcLength(contour, True), True)
+    max_dist = 0.0
+    end1, end2 = None, None
+    for i in range(len(approx)):
+        for j in range(i + 1, len(approx)):
+            d = np.linalg.norm(approx[i][0] - approx[j][0])
+            if d > max_dist:
+                max_dist, end1, end2 = d, approx[i][0], approx[j][0]
+    return (max_dist / PPM) / 10.0, end1, end2
+
+def calculate_curve(contour):
+    hull = cv2.convexHull(contour, returnPoints=False)
+    defects = cv2.convexityDefects(contour, hull)
+    curve_px, curve_point, defect_start, defect_end, foot = 0.0, None, None, None, None
+    if defects is not None:
+        max_depth = 0
+        best_defect = None
+        for i in range(defects.shape[0]):
+            s, e, f, d = defects[i].flatten()
+            if d > max_depth:
+                max_depth, best_defect = d, defects[i].flatten()
+        if best_defect is not None:
+            s, e, f, d = best_defect
+            defect_start, defect_end = contour[s][0], contour[e][0]
+            curve_point = contour[f][0]
+            curve_px = d / 256.0
+            v_line = defect_end.astype(np.float32) - defect_start.astype(np.float32)
+            v_far = curve_point.astype(np.float32) - defect_start.astype(np.float32)
+            l2 = np.dot(v_line, v_line)
+            if l2 == 0: foot = defect_start.astype(np.float32)
+            else: foot = defect_start.astype(np.float32) + max(0.0, min(1.0, np.dot(v_far, v_line) / l2)) * v_line
+    return (curve_px / PPM) / 10.0, defect_start, defect_end, curve_point, foot
+
+def calculate_thickness(start_pt, end_pt, dist_px, contour):
+    dists = np.linalg.norm(contour[:, 0, :] - start_pt, axis=1)
+    idx_start = np.argmin(dists)
+    n = len(contour)
+    def find_intersection(step):
+        prev_pt, prev_d = contour[idx_start][0].astype(float), dists[idx_start]
+        for i in range(1, n // 2):
+            idx = (idx_start + i * step) % n
+            pt, d = contour[idx][0].astype(float), dists[idx]
+            if d >= dist_px:
+                if d == prev_d: return pt
+                return prev_pt + ((dist_px - prev_d) / (d - prev_d)) * (pt - prev_pt)
+            prev_pt, prev_d = pt, d
+        return None
+    p1, p2 = find_intersection(1), find_intersection(-1)
+    if p1 is not None and p2 is not None: return (np.linalg.norm(p1 - p2) / PPM) / 10.0, p1, p2
+    return 0.0, None, None
+
+def evaluate_grade(length_cm, curve_cm, head_thick_cm, tail_thick_cm):
+    grade = "規格外"
+    curve_grade = "A" if curve_cm <= 1.5 else "B" if curve_cm <= 3.0 else "C" if curve_cm <= 5.0 else "規格外"
+    if curve_grade != "規格外" and (1.0 <= head_thick_cm <= 3.0) and (1.0 <= tail_thick_cm <= 3.0): grade = curve_grade
+    size_mark = ""
+    if grade == "A": size_mark = "L" if 22<=length_cm<=26 else "M" if 18<=length_cm<22 else "S" if 16<=length_cm<18 else ""
+    elif grade == "B": size_mark = "2L" if 28<=length_cm<=29 else "L" if 23<=length_cm<28 else "M" if 18<=length_cm<23 else "S" if 16<=length_cm<18 else ""
+    elif grade == "C": size_mark = "L" if 23<=length_cm<=29 else "M" if 16<=length_cm<23 else ""
+    return grade, f"{grade}{size_mark}" if grade != "規格外" else "規格外"
+
+def draw_results(warped, contour, ds, de, cp, foot, hp1, hp2, tp1, tp2):
+    res = warped.copy()
+    cv2.drawContours(res, [contour], -1, COLOR_CONTOUR, 2)
+    if ds is not None and de is not None: cv2.line(res, tuple(ds.astype(int)), tuple(de.astype(int)), COLOR_TABLE_LINE, 2)
+    if foot is not None and cp is not None:
+        cv2.line(res, tuple(foot.astype(int)), tuple(cp.astype(int)), COLOR_CURVE_LINE, 3)
+        cv2.circle(res, tuple(cp.astype(int)), 6, COLOR_CURVE_LINE, -1)
+    if hp1 is not None and hp2 is not None: cv2.line(res, tuple(hp1.astype(int)), tuple(hp2.astype(int)), COLOR_THICKNESS, 3)
+    if tp1 is not None and tp2 is not None: cv2.line(res, tuple(tp1.astype(int)), tuple(tp2.astype(int)), COLOR_THICKNESS, 3)
+    return res
+
+def process_quiz(image, pred_len, pred_thick, pred_curve):
+    if image is None: return None, "画像がありません", None, None, None, None
+    warped, err = detect_and_warp(image)
+    if err: return image, f"<h3 style='color:red;'>{err}</h3>", None, None, None, None
+    contour, err = extract_cucumber_contour(warped)
+    if err: return warped, f"<h3 style='color:red;'>{err}</h3>", None, None, None, None
     
-    idx = tags_df[tags_df['tag_id'] == str(tag_id)].index
-    if not idx.empty:
-        tags_df.loc[idx, 'current_item_code'] = "" 
-        conn.update(worksheet="Tags", data=tags_df)
+    length_cm, end1, end2 = calculate_length(contour)
+    curve_cm, ds, de, cp, foot = calculate_curve(contour)
+    head_thick_cm, hp1, hp2 = calculate_thickness(end1, end2, DIST_5CM_PX, contour)
+    tail_thick_cm, tp1, tp2 = calculate_thickness(end2, end1, DIST_5CM_PX, contour)
+    avg_thick_cm = (head_thick_cm + tail_thick_cm) / 2.0 if head_thick_cm > 0 else 1.5
 
-def parse_date(date_str):
-    if date_str and str(date_str).strip() != "":
-        return datetime.datetime.strptime(str(date_str), "%Y-%m-%d").date()
-    return None
+    d_len, d_thick, d_curve = abs(pred_len - length_cm), abs(pred_thick - avg_thick_cm), abs(pred_curve - curve_cm)
+    a_len = max(length_cm * (TOLERANCE_PCT_LENGTH / 100.0), MIN_TOLERANCE_CM)
+    a_thick = max(avg_thick_cm * (TOLERANCE_PCT_THICKNESS / 100.0), MIN_TOLERANCE_CM)
+    a_curve = max(curve_cm * (TOLERANCE_PCT_CURVE / 100.0), MIN_TOLERANCE_CM)
 
-# --- UIレイアウト ---
-if 'scanned_tag' not in st.session_state:
-    st.session_state['scanned_tag'] = None
-
-st.title("🌱 植物の育成管理システム (GSheets版)")
-
-col1, col2 = st.columns([1, 1.2])
-
-with col1:
-    st.header("1. QRコードの読み取り")
-    st.write("使い回す物理タグ（QRコード）をスキャンしてください。")
+    m_len, m_thick, m_curve = ("〇" if d_len<=a_len else "×"), ("〇" if d_thick<=a_thick else "×"), ("〇" if d_curve<=a_curve else "×")
+    bg_color, title = ("#d4edda", "大正解！🎉") if m_len=="〇" and m_thick=="〇" and m_curve=="〇" else ("#f8d7da", "おしかったね！💪")
     
-    tab1, tab2 = st.tabs(["📷 カメラ", "⌨️ 手入力(テスト用)"])
+    grade, display_grade = evaluate_grade(length_cm, curve_cm, head_thick_cm, tail_thick_cm)
+    rank_bg = {"A":"#e8f5e9", "B":"#fff3cd", "C":"#f8d7da"}.get(grade, "#f8f9fa")
     
-    with tab1:
-        camera_img = st.camera_input("QRコードを撮影", label_visibility="collapsed")
-        if camera_img:
-            img = Image.open(camera_img)
-            decoded_objects = decode(img)
-            
-            if decoded_objects:
-                for obj in decoded_objects:
-                    tag_id = obj.data.decode('utf-8')
-                    st.session_state['scanned_tag'] = tag_id
-                    st.success(f"スキャン成功: {tag_id}")
-                    st.rerun()
-            else:
-                st.warning("QRコードが検出できませんでした。")
-                
-    with tab2:
-        with st.form("manual_form"):
-            manual_tag = st.text_input("QRコードのテキスト (例: TAG-001)")
-            if st.form_submit_button("読み込む") and manual_tag:
-                st.session_state['scanned_tag'] = manual_tag.strip()
-                st.rerun()
+    res_img = draw_results(warped, contour, ds, de, cp, foot, hp1, hp2, tp1, tp2)
+    html = f"""
+    <div style="background-color: {bg_color}; padding: 20px; border-radius: 12px; color: black;">
+        <h2 style="text-align: center; margin-top: 0;">{title}</h2>
+        <p>📏 長さ: よそう {pred_len:.1f}cm ➔ 実測 <b>{length_cm:.1f}cm</b> 【{m_len}】</p>
+        <p>⭕ 太さ: よそう {pred_thick:.1f}cm ➔ 実測 <b>{avg_thick_cm:.1f}cm</b> 【{m_thick}】</p>
+        <p>〰️ 曲がり: よそう {pred_curve:.1f}cm ➔ 実測 <b>{curve_cm:.1f}cm</b> 【{m_curve}】</p>
+        <div style="background-color: {rank_bg}; padding: 10px; text-align: center; font-size: 1.2em; border-radius: 8px;">
+            <b>ランク: {display_grade}</b>
+        </div>
+    </div>
+    """
+    return res_img, html, length_cm, avg_thick_cm, curve_cm, display_grade
 
-with col2:
-    st.header("2. 個体の管理・記録")
+# ==========================================
+# 4. Streamlit UI 構成 (タブ切り替え)
+# ==========================================
+tab1, tab2 = st.tabs(["🌱 生育記録", "🥒 収穫・階級判定"])
+
+# --- タブ1: 生育記録 ---
+with tab1:
+    st.header("🌱 生育記録 (QRスキャン)")
+    # Take photoを押した瞬間に再レンダリングされ即座に下の処理へ進みます
+    qr_img = st.camera_input("QRコードを撮影（撮影後、すぐに情報が表示されます）", key="qr_camera")
     
-    if st.session_state['scanned_tag']:
-        tag_id = st.session_state['scanned_tag']
-        st.markdown(f"**現在のスキャンタグ:** `{tag_id}`")
+    if qr_img is not None:
+        file_bytes = np.asarray(bytearray(qr_img.read()), dtype=np.uint8)
+        tag_id = read_qr_from_bytes(file_bytes)
         
-        # スプレッドシートから状態を確認
-        with st.spinner('データベースと通信中...'):
+        if tag_id:
+            st.success(f"🏷️ タグを認識しました: {tag_id}")
             item_code = get_tag_info(tag_id)
-        
-        if not item_code:
-            st.info("ℹ️ このQRコードはリンクが消去されています（未割り当て）。")
-            st.write("このタグを使って新しい個体の記録を開始しますか？")
-            if st.button("🌱 新しい商品番号を取得して登録", type="primary"):
-                with st.spinner('スプレッドシートに書き込み中...'):
-                    new_code = register_new_item(tag_id)
-                st.success(f"新しい商品番号を割り当てました！ (番号: {new_code})")
-                st.rerun()
+            if not item_code:
+                item_code = register_new_item(tag_id)
+                st.info("新しいアイテムとして登録しました。")
+            
+            items_df = load_items()
+            match = items_df[items_df['item_code'] == item_code]
+            item_data = match.iloc[0].to_dict() if not match.empty else {}
+            
+            with st.form("growth_record_form"):
+                st.write(f"📝 編集対象コード: `{item_code}`")
                 
+                # エリア選択リスト（1〜12）
+                area_opts = [str(i) for i in range(1, 13)]
+                current_area = str(item_data.get('area_number', "1"))
+                if current_area not in area_opts: current_area = "1"
+                
+                col_a, col_b = st.columns(2)
+                with col_a:
+                    area = st.selectbox("試験エリア番号", area_opts, index=area_opts.index(current_area))
+                    sprout = st.date_input("発芽日", value=pd.to_datetime(item_data.get('sprout_date')).date() if item_data.get('sprout_date') else None)
+                with col_b:
+                    bloom = st.date_input("開花日", value=pd.to_datetime(item_data.get('bloom_date')).date() if item_data.get('bloom_date') else None)
+                    weight = st.number_input("重さ (g)", value=float(item_data.get('weight', 0.0)))
+                
+                comment = st.text_area("コメント（自由入力）", value=str(item_data.get('comment', '')))
+                
+                if st.form_submit_button("記録を更新する"):
+                    update_item_record(
+                        item_code, 
+                        sprout_date=sprout.strftime("%Y-%m-%d") if sprout else "",
+                        bloom_date=bloom.strftime("%Y-%m-%d") if bloom else "",
+                        weight=float(weight),
+                        area_number=area,
+                        comment=comment
+                    )
+                    st.success("データベースを更新しました！")
         else:
-            with st.spinner('データ取得中...'):
-                item_data = get_item_info(item_code)
-                
-            if item_data:
-                st.success(f"🌿 育成中の商品番号: **{item_code}**")
-                
-                with st.form("update_form"):
-                    sprout_val = parse_date(item_data['sprout_date'])
-                    bloom_val = parse_date(item_data['bloom_date'])
-                    weight_val = item_data['weight'] if item_data['weight'] else 0.0
-                    
-                    new_sprout = st.date_input("出芽の日", value=sprout_val, format="YYYY/MM/DD")
-                    new_bloom = st.date_input("開花の日", value=bloom_val, format="YYYY/MM/DD")
-                    new_weight = st.number_input("重さ (g)", value=float(weight_val), step=1.0)
-                    
-                    if st.form_submit_button("💾 記録を保存・更新する"):
-                        sprout_str = new_sprout.strftime("%Y-%m-%d") if new_sprout else ""
-                        bloom_str = new_bloom.strftime("%Y-%m-%d") if new_bloom else ""
-                        with st.spinner('スプレッドシートに書き込み中...'):
-                            update_item_info(item_code, sprout_str, bloom_str, new_weight)
-                        st.success("記録を更新しました！")
-                        
-                st.markdown("---")
-                st.write("収穫などが完了し、このQRコードを使い回す場合はリンクを消去してください。")
-                if st.button("🔗 QRコードのリンクを消去する", type="primary"):
-                    with st.spinner('リンクを解除中...'):
-                        clear_tag_link(tag_id)
-                    st.session_state['scanned_tag'] = tag_id 
-                    st.rerun()
-            else:
-                st.error("データが破損しています。")
-    else:
-        st.info("👈 左側のパネルからQRコードをスキャンしてください。")
+            st.error("QRコードを検出できませんでした。もう一度「Clear photo」を押して再撮影してください。")
+
+# --- タブ2: 収穫・階級判定 ---
+with tab2:
+    st.header("🥒 収穫・階級判定")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        img_source = st.radio("画像入力", ["カメラ", "アップロード"])
+        c_img = st.camera_input("キュウリを撮影（A4マーカー枠必須）") if img_source == "カメラ" else st.file_uploader("画像を選択", type=["jpg", "jpeg", "png"])
+        
+        pred_length = st.slider("① 長さのよそう (cm)", 5.0, 35.0, 20.0, 0.5)
+        pred_thick = st.slider("② 太さのよそう (cm)", 0.5, 5.0, 2.0, 0.1)
+        pred_curve = st.slider("③ 曲がりのよそう (cm)", 0.0, 10.0, 0.5, 0.1)
+        
+        grade_btn = st.button("✨ こたえあわせ＆判定する", type="primary")
+
+    with col2:
+        if grade_btn and c_img is not None:
+            file_bytes = np.asarray(bytearray(c_img.read()), dtype=np.uint8)
+            cv_img = cv2.imdecode(file_bytes, 1)
+            cv_img = cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB) # Streamlit描画用にRGB化
+            
+            res_img, html, l_cm, t_cm, c_cm, grade_str = process_quiz(cv_img, pred_length, pred_thick, pred_curve)
+            
+            if res_img is not None: st.image(res_img, channels="RGB")
+            st.markdown(html, unsafe_allow_html=True)
+            
+            # 結果をセッションに一時保存（下部の登録フォームで使うため）
+            if l_cm is not None:
+                st.session_state['last_eval'] = {'length': l_cm, 'thickness': t_cm, 'curve': c_cm, 'grade': grade_str}
+
+    # 判定結果のデータベース登録セクション
+    if 'last_eval' in st.session_state:
+        st.divider()
+        st.subheader("📝 判定結果をデータベースに登録")
+        
+        with st.form("save_grade_form"):
+            target_tag = st.text_input("QRタグ番号 (例: 002) を入力して紐づけます")
+            if st.form_submit_button("判定結果を保存"):
+                item_code = get_tag_info(target_tag)
+                if item_code:
+                    update_item_record(item_code, **st.session_state['last_eval'])
+                    st.success(f"タグ【{target_tag}】に階級データ（{st.session_state['last_eval']['grade']}）を記録しました！")
+                else:
+                    st.error("入力されたタグ番号は未登録か、見つかりません。")
