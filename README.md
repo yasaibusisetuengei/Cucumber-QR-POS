@@ -1,1 +1,1 @@
-# Cucumber-QR-code-maker
+# Cucumber-QR-POS
