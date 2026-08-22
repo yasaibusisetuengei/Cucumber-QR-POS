@@ -232,7 +232,13 @@ tab1, tab2 = st.tabs(["🌱 生育記録", "🥒 収穫・階級判定"])
 # --- タブ1: 生育記録 ---
 with tab1:
     st.header("🌱 生育記録 (QRスキャン)")
-    qr_img = st.camera_input("QRコードを撮影（撮影後、すぐに情報が表示されます）", key="qr_camera")
+    
+    # 🌟 画像アップロード機能を追加しました
+    img_source_qr = st.radio("入力方法", ["カメラ", "アップロード"], key="qr_radio")
+    if img_source_qr == "カメラ":
+        qr_img = st.camera_input("QRコードを撮影", key="qr_camera")
+    else:
+        qr_img = st.file_uploader("QRコード画像を選択", type=["jpg", "jpeg", "png"], key="qr_upload")
     
     if qr_img is not None:
         file_bytes = np.asarray(bytearray(qr_img.read()), dtype=np.uint8)
@@ -277,7 +283,7 @@ with tab1:
                     )
                     st.success("データベースを更新しました！")
         else:
-            st.error("QRコードを検出できませんでした。もう一度「Clear photo」を押して再撮影してください。")
+            st.error("QRコードを検出できませんでした。別の画像を選択するか、再撮影してください。")
 
 # --- タブ2: 収穫・階級判定 ---
 with tab2:
