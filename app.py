@@ -194,12 +194,13 @@ def draw_results(warped, contour, ds, de, cp, foot, hp1, hp2, tp1, tp2):
     if tp1 is not None and tp2 is not None: cv2.line(res, tuple(tp1.astype(int)), tuple(tp2.astype(int)), COLOR_THICKNESS, 3)
     return res
 
+# 🌟 warped(補正後画像)も呼び出し元に返すように変更しました
 def process_measurement(image):
-    if image is None: return None, "画像がありません", None, None, None, None
+    if image is None: return None, "画像がありません", None, None, None, None, None
     warped, err = detect_and_warp(image)
-    if err: return image, f"<h3 style='color:red;'>{err}</h3>", None, None, None, None
+    if err: return image, f"<h3 style='color:red;'>{err}</h3>", None, None, None, None, None
     contour, err = extract_cucumber_contour(warped)
-    if err: return warped, f"<h3 style='color:red;'>{err}</h3>", None, None, None, None
+    if err: return warped, f"<h3 style='color:red;'>{err}</h3>", None, None, None, None, None
     
     length_cm, end1, end2 = calculate_length(contour)
     curve_cm, ds, de, cp, foot = calculate_curve(contour)
@@ -222,7 +223,7 @@ def process_measurement(image):
         </div>
     </div>
     """
-    return res_img, html, length_cm, avg_thick_cm, curve_cm, display_grade
+    return res_img, html, length_cm, avg_thick_cm, curve_cm, display_grade, warped
 
 # ==========================================
 # 4. Streamlit UI 構成 (タブ切り替え)
@@ -233,7 +234,6 @@ tab1, tab2 = st.tabs(["🌱 生育記録", "🥒 収穫・階級判定"])
 with tab1:
     st.header("🌱 生育記録 (QRスキャン)")
     
-    # 🌟 画像アップロード機能を追加しました
     img_source_qr = st.radio("入力方法", ["カメラ", "アップロード"], key="qr_radio")
     if img_source_qr == "カメラ":
         qr_img = st.camera_input("QRコードを撮影", key="qr_camera")
@@ -291,35 +291,46 @@ with tab2:
     
     col1, col2 = st.columns(2)
     with col1:
-        img_source = st.radio("画像入力", ["カメラ", "アップロード"])
-        c_img = st.camera_input("キュウリを撮影（A4マーカー枠必須）") if img_source == "カメラ" else st.file_uploader("画像を選択", type=["jpg", "jpeg", "png"])
+        img_source_grade = st.radio("画像入力", ["カメラ", "アップロード"], key="grade_radio")
+        if img_source_grade == "カメラ":
+            c_img = st.camera_input("キュウリを撮影（A4マーカー枠＆QRコード必須）", key="grade_camera")
+        else:
+            c_img = st.file_uploader("画像を選択", type=["jpg", "jpeg", "png"], key="grade_upload")
         
-        grade_btn = st.button("📏 計測", type="primary")
+        grade_btn = st.button("📏 計測＆DB登録", type="primary")
 
     with col2:
         if grade_btn and c_img is not None:
             file_bytes = np.asarray(bytearray(c_img.read()), dtype=np.uint8)
             cv_img = cv2.imdecode(file_bytes, 1)
-            cv_img = cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB)
+            cv_img_rgb = cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB)
             
-            res_img, html, l_cm, t_cm, c_cm, grade_str = process_measurement(cv_img)
+            # 計測処理の実行
+            res_img, html, l_cm, t_cm, c_cm, grade_str, warped = process_measurement(cv_img_rgb)
             
             if res_img is not None: st.image(res_img, channels="RGB")
             st.markdown(html, unsafe_allow_html=True)
             
             if l_cm is not None:
-                st.session_state['last_eval'] = {'length': l_cm, 'thickness': t_cm, 'curve': c_cm, 'grade': grade_str}
-
-    if 'last_eval' in st.session_state:
-        st.divider()
-        st.subheader("📝 判定結果をデータベースに登録")
-        
-        with st.form("save_grade_form"):
-            target_tag = st.text_input("QRタグ番号 (例: 002) を入力して紐づけます")
-            if st.form_submit_button("判定結果を保存"):
-                item_code = get_tag_info(target_tag)
-                if item_code:
-                    update_item_record(item_code, **st.session_state['last_eval'])
-                    st.success(f"タグ【{target_tag}】に階級データ（{st.session_state['last_eval']['grade']}）を記録しました！")
+                # 🌟 1. まず元画像からQR読み取りを試みる
+                tag_id = read_qr_from_bytes(file_bytes)
+                
+                # 🌟 2. 読めなかったら、歪みを補正した後の画像(warped)から読み取りを試みる
+                if not tag_id and warped is not None:
+                    detector = cv2.QRCodeDetector()
+                    warped_bgr = cv2.cvtColor(warped, cv2.COLOR_RGB2BGR)
+                    data, _, _ = detector.detectAndDecode(warped_bgr)
+                    tag_id = str(data).strip() if data else None
+                
+                # 🌟 3. DBへ自動登録
+                if tag_id:
+                    item_code = get_tag_info(tag_id)
+                    if item_code:
+                        update_item_record(item_code, length=l_cm, thickness=t_cm, curve=c_cm, grade=grade_str)
+                        st.success(f"✅ タグ【{tag_id}】を検出し、階級データ（{grade_str}）をデータベースに記録しました！")
+                    else:
+                        item_code = register_new_item(tag_id)
+                        update_item_record(item_code, length=l_cm, thickness=t_cm, curve=c_cm, grade=grade_str)
+                        st.success(f"✅ 新規タグ【{tag_id}】を登録し、階級データ（{grade_str}）を記録しました！")
                 else:
-                    st.error("入力されたタグ番号は未登録か、見つかりません。")
+                    st.error("⚠️ 画像からQRコードを検出できませんでした。計測は完了しましたが、データベースには登録されていません。QRコードがはっきり写るように撮影してください。")
