@@ -88,7 +88,6 @@ def register_new_item(tag_id):
         new_tag = pd.DataFrame({'tag_id': [str(tag_id)], 'current_item_code': [item_code]})
         tags_df = pd.concat([tags_df, new_tag], ignore_index=True)
         
-    # 🌟 収穫日(harvest_date) を初期データとして追加
     new_item = pd.DataFrame({
         'item_code': [item_code], 'sprout_date': [""], 'bloom_date': [""], 'harvest_date': [""], 'weight': [0.0],
         'area_number': ["1"], 'comment': [""], 'grade': [""], 'length': [0.0], 'thickness': [0.0], 'curve': [0.0]
@@ -310,7 +309,6 @@ with tab1:
             match = items_df[items_df['item_code'] == item_code]
             item_data = match.iloc[0].to_dict() if not match.empty else {}
             
-            # 🌟 データ整理と自動入力の判定ロジック
             def clean_date_str(val):
                 s = str(val).strip()
                 return "" if s == "nan" or s == "None" else s
@@ -322,64 +320,92 @@ with tab1:
             today_date = datetime.date.today()
             today_str = today_date.strftime("%Y-%m-%d")
             
-            # ⑤ 同日に複数回読み込まれた場合の判定
+            # 🌟 QR読み込み時に瞬時にDBを更新するロジック
             if today_str in [s_date_str, b_date_str, h_date_str]:
                 st.info("✅ 本日読み込み済みです。")
             else:
-                # ②〜④ 順番に空いている箇所へ本日の日付を自動セット
+                updated = False
                 if not s_date_str:
-                    s_date_str = today_str
+                    s_date_str, updated = today_str, True
                 elif not b_date_str:
-                    b_date_str = today_str
+                    b_date_str, updated = today_str, True
                 elif not h_date_str:
-                    h_date_str = today_str
-            
-            # ⑥ フォームに渡すために Date オブジェクトまたは None に変換
+                    h_date_str, updated = today_str, True
+                
+                if updated:
+                    update_item_record(
+                        item_code, 
+                        sprout_date=s_date_str,
+                        bloom_date=b_date_str,
+                        harvest_date=h_date_str
+                    )
+                    st.success("🌱 スキャンを検知し、自動でデータベースを更新しました！")
+
             def parse_date(d_str):
                 if d_str:
                     try:
                         return pd.to_datetime(d_str).date()
                     except:
-                        return None
+                        pass
                 return None
                 
             s_date_val = parse_date(s_date_str)
             b_date_val = parse_date(b_date_str)
             h_date_val = parse_date(h_date_str)
             
-            with st.form("growth_record_form"):
-                st.write(f"📝 編集対象コード: `{item_code}`")
+            # 🌟 「記録を更新する」ボタンを廃止し、リアルタイム更新に変更
+            st.write(f"📝 編集対象コード: `{item_code}`")
+            
+            area_opts = [str(i) for i in range(1, 13)]
+            current_area = clean_date_str(item_data.get('area_number', "1"))
+            if current_area not in area_opts: current_area = "1"
+            
+            # エリア番号の即時更新
+            area = st.selectbox("試験エリア番号", area_opts, index=area_opts.index(current_area))
+            if area != current_area:
+                update_item_record(item_code, area_number=str(area))
+                st.toast("✅ エリア番号を保存しました")
+                st.rerun()
+            
+            # 日付入力と消去ボタン
+            col_a, col_b, col_c = st.columns(3)
+            with col_a:
+                sprout = st.date_input("発芽日", value=s_date_val)
+                if sprout != s_date_val:
+                    update_item_record(item_code, sprout_date=sprout.strftime("%Y-%m-%d") if sprout else "")
+                    st.toast("✅ 発芽日を保存しました")
+                    st.rerun()
+                if st.button("🗑️ 発芽日を消去", key="clear_s", use_container_width=True):
+                    update_item_record(item_code, sprout_date="")
+                    st.rerun()
+                    
+            with col_b:
+                bloom = st.date_input("開花日", value=b_date_val)
+                if bloom != b_date_val:
+                    update_item_record(item_code, bloom_date=bloom.strftime("%Y-%m-%d") if bloom else "")
+                    st.toast("✅ 開花日を保存しました")
+                    st.rerun()
+                if st.button("🗑️ 開花日を消去", key="clear_b", use_container_width=True):
+                    update_item_record(item_code, bloom_date="")
+                    st.rerun()
+                    
+            with col_c:
+                harvest = st.date_input("収穫日", value=h_date_val)
+                if harvest != h_date_val:
+                    update_item_record(item_code, harvest_date=harvest.strftime("%Y-%m-%d") if harvest else "")
+                    st.toast("✅ 収穫日を保存しました")
+                    st.rerun()
+                if st.button("🗑️ 収穫日を消去", key="clear_h", use_container_width=True):
+                    update_item_record(item_code, harvest_date="")
+                    st.rerun()
+            
+            # コメントの即時更新
+            comment = st.text_area("コメント（自由入力）", value=clean_date_str(item_data.get('comment', '')))
+            if comment != clean_date_str(item_data.get('comment', '')):
+                update_item_record(item_code, comment=str(comment))
+                st.toast("✅ コメントを保存しました")
+                st.rerun()
                 
-                area_opts = [str(i) for i in range(1, 13)]
-                current_area = clean_date_str(item_data.get('area_number', "1"))
-                if current_area not in area_opts: current_area = "1"
-                
-                # エリア選択
-                area = st.selectbox("試験エリア番号", area_opts, index=area_opts.index(current_area))
-                
-                # ① 3つの日付入力欄を配置
-                # ⑥ value に None が渡された場合、入力欄は空になり手動選択可能。カレンダーの「×」で消去も可能。
-                col_a, col_b, col_c = st.columns(3)
-                with col_a:
-                    sprout = st.date_input("発芽日", value=s_date_val)
-                with col_b:
-                    bloom = st.date_input("開花日", value=b_date_val)
-                with col_c:
-                    harvest = st.date_input("収穫日", value=h_date_val)
-                
-                comment = st.text_area("コメント（自由入力）", value=clean_date_str(item_data.get('comment', '')))
-                
-                if st.form_submit_button("記録を更新する"):
-                    # ⑥ 未選択(None)の時は空文字("")として保存する
-                    update_item_record(
-                        item_code, 
-                        sprout_date=sprout.strftime("%Y-%m-%d") if sprout else "",
-                        bloom_date=bloom.strftime("%Y-%m-%d") if bloom else "",
-                        harvest_date=harvest.strftime("%Y-%m-%d") if harvest else "",
-                        area_number=str(area),
-                        comment=str(comment)
-                    )
-                    st.success("データベースを更新しました！")
         else:
             st.error("QRコードを検出できませんでした。別の画像を選択するか、再撮影してください。")
 
