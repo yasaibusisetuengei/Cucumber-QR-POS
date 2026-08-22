@@ -2,3 +2,4 @@ streamlit
 pandas
 pyzbar
 Pillow
+st-gsheets-connection
