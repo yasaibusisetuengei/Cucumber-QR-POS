@@ -33,10 +33,15 @@ def load_tags():
 
 def load_items():
     df = conn.read(worksheet="Items", ttl=0, dtype=str)
+    # 🌟 修正: 数値列は0.0で、それ以外の文字列表は空文字("")で埋めるように修正
     for col in ['weight', 'length', 'thickness', 'curve']:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
-    return df.fillna("")
+            
+    for col in df.columns:
+        if col not in ['weight', 'length', 'thickness', 'curve']:
+            df[col] = df[col].fillna("")
+    return df
 
 def get_tag_info(tag_id):
     tags_df = load_tags()
@@ -73,9 +78,15 @@ def update_item_record(item_code, **kwargs):
     items_df = load_items()
     items_df['item_code'] = items_df['item_code'].astype(str)
     idx = items_df[items_df['item_code'] == str(item_code)].index
+    
     if not idx.empty:
         for key, val in kwargs.items():
+            if key not in items_df.columns:
+                items_df[key] = ""
+            # 🌟 修正: Pandasの厳格な型チェックを回避するため、object型に変換してから代入
+            items_df[key] = items_df[key].astype(object)
             items_df.loc[idx, key] = val
+            
         conn.update(worksheet="Items", data=items_df)
 
 def read_qr_from_bytes(file_bytes):
@@ -194,7 +205,6 @@ def draw_results(warped, contour, ds, de, cp, foot, hp1, hp2, tp1, tp2):
     if tp1 is not None and tp2 is not None: cv2.line(res, tuple(tp1.astype(int)), tuple(tp2.astype(int)), COLOR_THICKNESS, 3)
     return res
 
-# 🌟 warped(補正後画像)も呼び出し元に返すように変更しました
 def process_measurement(image):
     if image is None: return None, "画像がありません", None, None, None, None, None
     warped, err = detect_and_warp(image)
@@ -273,13 +283,14 @@ with tab1:
                 comment = st.text_area("コメント（自由入力）", value=str(item_data.get('comment', '')))
                 
                 if st.form_submit_button("記録を更新する"):
+                    # 🌟 修正: 型を明示的に指定して更新関数に渡す
                     update_item_record(
                         item_code, 
                         sprout_date=sprout.strftime("%Y-%m-%d") if sprout else "",
                         bloom_date=bloom.strftime("%Y-%m-%d") if bloom else "",
                         weight=float(weight),
-                        area_number=area,
-                        comment=comment
+                        area_number=str(area),
+                        comment=str(comment)
                     )
                     st.success("データベースを更新しました！")
         else:
@@ -312,25 +323,23 @@ with tab2:
             st.markdown(html, unsafe_allow_html=True)
             
             if l_cm is not None:
-                # 🌟 1. まず元画像からQR読み取りを試みる
                 tag_id = read_qr_from_bytes(file_bytes)
                 
-                # 🌟 2. 読めなかったら、歪みを補正した後の画像(warped)から読み取りを試みる
                 if not tag_id and warped is not None:
                     detector = cv2.QRCodeDetector()
                     warped_bgr = cv2.cvtColor(warped, cv2.COLOR_RGB2BGR)
                     data, _, _ = detector.detectAndDecode(warped_bgr)
                     tag_id = str(data).strip() if data else None
                 
-                # 🌟 3. DBへ自動登録
                 if tag_id:
                     item_code = get_tag_info(tag_id)
+                    # 🌟 修正: 小数はfloat、文字列はstrに明示的に変換して渡す
                     if item_code:
-                        update_item_record(item_code, length=l_cm, thickness=t_cm, curve=c_cm, grade=grade_str)
+                        update_item_record(item_code, length=float(l_cm), thickness=float(t_cm), curve=float(c_cm), grade=str(grade_str))
                         st.success(f"✅ タグ【{tag_id}】を検出し、階級データ（{grade_str}）をデータベースに記録しました！")
                     else:
                         item_code = register_new_item(tag_id)
-                        update_item_record(item_code, length=l_cm, thickness=t_cm, curve=c_cm, grade=grade_str)
+                        update_item_record(item_code, length=float(l_cm), thickness=float(t_cm), curve=float(c_cm), grade=str(grade_str))
                         st.success(f"✅ 新規タグ【{tag_id}】を登録し、階級データ（{grade_str}）を記録しました！")
                 else:
                     st.error("⚠️ 画像からQRコードを検出できませんでした。計測は完了しましたが、データベースには登録されていません。QRコードがはっきり写るように撮影してください。")
