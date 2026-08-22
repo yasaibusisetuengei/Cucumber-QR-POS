@@ -14,7 +14,7 @@ conn = st.connection("gsheets", type=GSheetsConnection)
 # 🌟 GitHub サンプル画像のURL設定
 # ご自身のリポジトリURLに書き換えてください
 # ==========================================
-SAMPLE1_URL = "sample/sample1.png"
+SAMPLE1_URL = "https://raw.githubusercontent.com/YOUR_USERNAME/YOUR_REPO/main/sample1.png"
 SAMPLE2_URL = "sample/sample2.jpg"
 
 def get_image_bytes_from_url(url):
