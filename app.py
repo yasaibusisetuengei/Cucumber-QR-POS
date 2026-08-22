@@ -12,7 +12,6 @@ conn = st.connection("gsheets", type=GSheetsConnection)
 
 # ==========================================
 # 🌟 GitHub サンプル画像のURL設定
-# ご自身のリポジトリURLに書き換えてください
 # ==========================================
 SAMPLE1_URL = "https://raw.githubusercontent.com//yasaibusisetuengei/Cucumber-QR-POS/main/sample/sample1.png"
 SAMPLE2_URL = "https://raw.githubusercontent.com//yasaibusisetuengei/Cucumber-QR-POS/main/sample/sample2.jpg"
@@ -32,7 +31,6 @@ def get_image_bytes_from_url(url):
 if "grade_result" not in st.session_state:
     st.session_state.grade_result = None
 
-# 画像が変更されたら以前の計測結果をクリアする関数
 def clear_grade_result():
     st.session_state.grade_result = None
 
@@ -90,8 +88,9 @@ def register_new_item(tag_id):
         new_tag = pd.DataFrame({'tag_id': [str(tag_id)], 'current_item_code': [item_code]})
         tags_df = pd.concat([tags_df, new_tag], ignore_index=True)
         
+    # 🌟 収穫日(harvest_date) を初期データとして追加
     new_item = pd.DataFrame({
-        'item_code': [item_code], 'sprout_date': [""], 'bloom_date': [""], 'weight': [0.0],
+        'item_code': [item_code], 'sprout_date': [""], 'bloom_date': [""], 'harvest_date': [""], 'weight': [0.0],
         'area_number': ["1"], 'comment': [""], 'grade': [""], 'length': [0.0], 'thickness': [0.0], 'curve': [0.0]
     })
     items_df = pd.concat([items_df, new_item], ignore_index=True)
@@ -311,27 +310,72 @@ with tab1:
             match = items_df[items_df['item_code'] == item_code]
             item_data = match.iloc[0].to_dict() if not match.empty else {}
             
+            # 🌟 データ整理と自動入力の判定ロジック
+            def clean_date_str(val):
+                s = str(val).strip()
+                return "" if s == "nan" or s == "None" else s
+
+            s_date_str = clean_date_str(item_data.get('sprout_date', ''))
+            b_date_str = clean_date_str(item_data.get('bloom_date', ''))
+            h_date_str = clean_date_str(item_data.get('harvest_date', ''))
+            
+            today_date = datetime.date.today()
+            today_str = today_date.strftime("%Y-%m-%d")
+            
+            # ⑤ 同日に複数回読み込まれた場合の判定
+            if today_str in [s_date_str, b_date_str, h_date_str]:
+                st.info("✅ 本日読み込み済みです。")
+            else:
+                # ②〜④ 順番に空いている箇所へ本日の日付を自動セット
+                if not s_date_str:
+                    s_date_str = today_str
+                elif not b_date_str:
+                    b_date_str = today_str
+                elif not h_date_str:
+                    h_date_str = today_str
+            
+            # ⑥ フォームに渡すために Date オブジェクトまたは None に変換
+            def parse_date(d_str):
+                if d_str:
+                    try:
+                        return pd.to_datetime(d_str).date()
+                    except:
+                        return None
+                return None
+                
+            s_date_val = parse_date(s_date_str)
+            b_date_val = parse_date(b_date_str)
+            h_date_val = parse_date(h_date_str)
+            
             with st.form("growth_record_form"):
                 st.write(f"📝 編集対象コード: `{item_code}`")
                 
                 area_opts = [str(i) for i in range(1, 13)]
-                current_area = str(item_data.get('area_number', "1"))
+                current_area = clean_date_str(item_data.get('area_number', "1"))
                 if current_area not in area_opts: current_area = "1"
                 
-                col_a, col_b = st.columns(2)
-                with col_a:
-                    area = st.selectbox("試験エリア番号", area_opts, index=area_opts.index(current_area))
-                    sprout = st.date_input("発芽日", value=pd.to_datetime(item_data.get('sprout_date')).date() if item_data.get('sprout_date') else None)
-                with col_b:
-                    bloom = st.date_input("開花日", value=pd.to_datetime(item_data.get('bloom_date')).date() if item_data.get('bloom_date') else None)
+                # エリア選択
+                area = st.selectbox("試験エリア番号", area_opts, index=area_opts.index(current_area))
                 
-                comment = st.text_area("コメント（自由入力）", value=str(item_data.get('comment', '')))
+                # ① 3つの日付入力欄を配置
+                # ⑥ value に None が渡された場合、入力欄は空になり手動選択可能。カレンダーの「×」で消去も可能。
+                col_a, col_b, col_c = st.columns(3)
+                with col_a:
+                    sprout = st.date_input("発芽日", value=s_date_val)
+                with col_b:
+                    bloom = st.date_input("開花日", value=b_date_val)
+                with col_c:
+                    harvest = st.date_input("収穫日", value=h_date_val)
+                
+                comment = st.text_area("コメント（自由入力）", value=clean_date_str(item_data.get('comment', '')))
                 
                 if st.form_submit_button("記録を更新する"):
+                    # ⑥ 未選択(None)の時は空文字("")として保存する
                     update_item_record(
                         item_code, 
                         sprout_date=sprout.strftime("%Y-%m-%d") if sprout else "",
                         bloom_date=bloom.strftime("%Y-%m-%d") if bloom else "",
+                        harvest_date=harvest.strftime("%Y-%m-%d") if harvest else "",
                         area_number=str(area),
                         comment=str(comment)
                     )
@@ -359,7 +403,6 @@ with tab2:
             raw_data = get_image_bytes_from_url(SAMPLE2_URL)
             if raw_data: file_bytes_grade = np.asarray(bytearray(raw_data), dtype=np.uint8)
 
-        # 🌟 修正: アップロード・サンプルの場合にプレビュー画像を表示
         if file_bytes_grade is not None and img_source_grade in ["アップロード", "サンプル画像 (sample2)"]:
             cv_img_grade_preview = cv2.imdecode(file_bytes_grade, 1)
             st.image(cv2.cvtColor(cv_img_grade_preview, cv2.COLOR_BGR2RGB), use_container_width=True)
