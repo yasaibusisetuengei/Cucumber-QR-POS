@@ -27,6 +27,16 @@ def get_image_bytes_from_url(url):
         return None
 
 # ==========================================
+# 🌟 Session State の初期化 (2ステップ動作用)
+# ==========================================
+if "grade_result" not in st.session_state:
+    st.session_state.grade_result = None
+
+# 画像が変更されたら以前の計測結果をクリアする関数
+def clear_grade_result():
+    st.session_state.grade_result = None
+
+# ==========================================
 # 1. 階級判定用の定数設定
 # ==========================================
 A4_W_MM, A4_H_MM = 297.0, 210.0
@@ -104,7 +114,6 @@ def update_item_record(item_code, **kwargs):
             
         conn.update(worksheet="Items", data=items_df)
 
-# 🌟 条件③: QRコード使いまわしのためのリンク解除関数
 def unbind_tag(tag_id):
     tags_df = load_tags()
     tags_df['tag_id'] = tags_df['tag_id'].astype(str)
@@ -270,7 +279,6 @@ tab1, tab2 = st.tabs(["🌱 生育記録", "🥒 収穫・階級判定"])
 with tab1:
     st.header("🌱 生育記録 (QRスキャン)")
     
-    # 🌟 条件②: サンプル画像選択を追加
     img_source_qr = st.radio("入力方法", ["カメラ", "アップロード", "サンプル画像 (sample1)"], key="qr_radio")
     
     file_bytes_qr = None
@@ -286,6 +294,11 @@ with tab1:
         if raw_data: file_bytes_qr = np.asarray(bytearray(raw_data), dtype=np.uint8)
 
     if file_bytes_qr is not None:
+        # 🌟 条件①: アップロード・サンプルの場合に画像を表示
+        if img_source_qr in ["アップロード", "サンプル画像 (sample1)"]:
+            cv_img_qr = cv2.imdecode(file_bytes_qr, 1)
+            st.image(cv2.cvtColor(cv_img_qr, cv2.COLOR_BGR2RGB), use_container_width=True)
+            
         tag_id = read_qr_from_bytes(file_bytes_qr)
         
         if tag_id:
@@ -312,7 +325,6 @@ with tab1:
                     sprout = st.date_input("発芽日", value=pd.to_datetime(item_data.get('sprout_date')).date() if item_data.get('sprout_date') else None)
                 with col_b:
                     bloom = st.date_input("開花日", value=pd.to_datetime(item_data.get('bloom_date')).date() if item_data.get('bloom_date') else None)
-                    # 🌟 条件①: 重さ入力欄は「収穫・階級判定」へ移動のため削除
                 
                 comment = st.text_area("コメント（自由入力）", value=str(item_data.get('comment', '')))
                 
@@ -334,25 +346,23 @@ with tab2:
     
     col1, col2 = st.columns(2)
     with col1:
-        # 🌟 条件②: サンプル画像選択を追加
-        img_source_grade = st.radio("画像入力", ["カメラ", "アップロード", "サンプル画像 (sample2)"], key="grade_radio")
+        # 画像入力が変わったら判定結果をリセットする
+        img_source_grade = st.radio("画像入力", ["カメラ", "アップロード", "サンプル画像 (sample2)"], key="grade_radio", on_change=clear_grade_result)
         
         file_bytes_grade = None
         if img_source_grade == "カメラ":
-            c_img = st.camera_input("キュウリを撮影（A4マーカー枠＆QRコード必須）", key="grade_camera")
+            c_img = st.camera_input("キュウリを撮影（A4マーカー枠＆QRコード必須）", key="grade_camera", on_change=clear_grade_result)
             if c_img: file_bytes_grade = np.asarray(bytearray(c_img.read()), dtype=np.uint8)
         elif img_source_grade == "アップロード":
-            c_img = st.file_uploader("画像を選択", type=["jpg", "jpeg", "png"], key="grade_upload")
+            c_img = st.file_uploader("画像を選択", type=["jpg", "jpeg", "png"], key="grade_upload", on_change=clear_grade_result)
             if c_img: file_bytes_grade = np.asarray(bytearray(c_img.read()), dtype=np.uint8)
         else:
             st.info("GitHub上のサンプル画像 (sample2.jpg) を使用します。")
             raw_data = get_image_bytes_from_url(SAMPLE2_URL)
             if raw_data: file_bytes_grade = np.asarray(bytearray(raw_data), dtype=np.uint8)
 
-        # 🌟 条件①: 生育記録から移動してきた「重さ (g)」入力欄
-        harvest_weight = st.number_input("重さ (g)", min_value=0.0, step=1.0, value=100.0, key="harvest_weight")
-        
-        grade_btn = st.button("📏 計測＆DB登録", type="primary")
+        # 🌟 条件②: まず「計測」だけを行うボタン
+        grade_btn = st.button("📏 計測して階級を判定", type="primary")
 
     with col2:
         if grade_btn and file_bytes_grade is not None:
@@ -361,32 +371,55 @@ with tab2:
             
             res_img, html, l_cm, t_cm, c_cm, grade_str, warped = process_measurement(cv_img_rgb)
             
-            if res_img is not None: st.image(res_img, channels="RGB")
-            st.markdown(html, unsafe_allow_html=True)
-            
+            tag_id = None
             if l_cm is not None:
                 tag_id = read_qr_from_bytes(file_bytes_grade)
-                
                 if not tag_id and warped is not None:
                     detector = cv2.QRCodeDetector()
                     warped_bgr = cv2.cvtColor(warped, cv2.COLOR_RGB2BGR)
                     data, _, _ = detector.detectAndDecode(warped_bgr)
                     tag_id = str(data).strip() if data else None
-                
-                if tag_id:
-                    item_code = get_tag_info(tag_id)
-                    # 重さ(weight)も一緒に登録
-                    if item_code:
-                        update_item_record(item_code, length=float(l_cm), thickness=float(t_cm), curve=float(c_cm), grade=str(grade_str), weight=float(harvest_weight))
-                        st.success(f"✅ タグ【{tag_id}】を検出し、階級（{grade_str}）・重さ（{harvest_weight}g）を自動記録しました！")
-                    else:
-                        item_code = register_new_item(tag_id)
-                        update_item_record(item_code, length=float(l_cm), thickness=float(t_cm), curve=float(c_cm), grade=str(grade_str), weight=float(harvest_weight))
-                        st.success(f"✅ 新規タグ【{tag_id}】を登録し、階級（{grade_str}）・重さ（{harvest_weight}g）を記録しました！")
-                else:
-                    st.error("⚠️ 画像からQRコードを検出できませんでした。計測は完了しましたが、データベースには登録されていません。")
+            
+            # 計測結果をSession Stateに保存
+            st.session_state.grade_result = {
+                'res_img': res_img,
+                'html': html,
+                'l_cm': l_cm,
+                't_cm': t_cm,
+                'c_cm': c_cm,
+                'grade_str': grade_str,
+                'tag_id': tag_id
+            }
 
-    # 🌟 条件③: アコーディオン内のリンク解除ボタン
+        # 🌟 判定結果が保存されていれば表示し、「重さ入力とDB登録」のフォームを出す
+        if st.session_state.grade_result is not None:
+            res = st.session_state.grade_result
+            
+            if res['res_img'] is not None: 
+                st.image(res['res_img'], channels="RGB")
+            if res['html']: 
+                st.markdown(res['html'], unsafe_allow_html=True)
+            
+            if res['l_cm'] is not None:
+                if res['tag_id']:
+                    st.success(f"✅ タグ【{res['tag_id']}】を検出しました。重さを入力して登録を完了させてください。")
+                    
+                    with st.form("register_grade_form"):
+                        harvest_weight = st.number_input("重さ (g)", min_value=0.0, step=1.0, value=100.0, key="harvest_weight")
+                        submit_btn = st.form_submit_button("💾 データベースに登録", type="primary")
+                        
+                        if submit_btn:
+                            item_code = get_tag_info(res['tag_id'])
+                            if item_code:
+                                update_item_record(item_code, length=float(res['l_cm']), thickness=float(res['t_cm']), curve=float(res['c_cm']), grade=str(res['grade_str']), weight=float(harvest_weight))
+                                st.success(f"🎉 アイテム【{item_code}】の階級（{res['grade_str']}）と 重さ（{harvest_weight}g）を登録しました！")
+                            else:
+                                item_code = register_new_item(res['tag_id'])
+                                update_item_record(item_code, length=float(res['l_cm']), thickness=float(res['t_cm']), curve=float(res['c_cm']), grade=str(res['grade_str']), weight=float(harvest_weight))
+                                st.success(f"🎉 新規タグとして 階級（{res['grade_str']}）と 重さ（{harvest_weight}g）を登録しました！")
+                else:
+                    st.error("⚠️ 画像からQRコードを検出できませんでした。計測は完了しましたが、データベースには登録できません。")
+
     st.divider()
     with st.expander("🔗 QRコードの使いまわし（タグのリンク解除）"):
         st.write("QRコードを再利用して新しいキュウリに使用する場合、現在のアイテムとの紐づけを解除します。")
