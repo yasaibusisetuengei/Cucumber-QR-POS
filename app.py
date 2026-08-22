@@ -28,8 +28,7 @@ def get_tag_info(tag_id):
     match = tags_df[tags_df['tag_id'] == tag_id]
     if not match.empty:
         code = match.iloc[0]['current_item_code']
-        # 空白やNaNの場合は未割り当てと判定
-        if pd.isna(code) or code == "":
+        if pd.isna(code) or str(code).strip() == "":
             return None
         return str(code)
     return None
@@ -40,9 +39,9 @@ def get_item_info(item_code):
     if not match.empty:
         row = match.iloc[0]
         return {
-            "sprout_date": row['sprout_date'] if pd.notna(row['sprout_date']) and row['sprout_date'] != "" else None,
-            "bloom_date": row['bloom_date'] if pd.notna(row['bloom_date']) and row['bloom_date'] != "" else None,
-            "weight": row['weight'] if pd.notna(row['weight']) and row['weight'] != "" else 0.0
+            "sprout_date": row['sprout_date'] if pd.notna(row['sprout_date']) and str(row['sprout_date']).strip() != "" else None,
+            "bloom_date": row['bloom_date'] if pd.notna(row['bloom_date']) and str(row['bloom_date']).strip() != "" else None,
+            "weight": row['weight'] if pd.notna(row['weight']) and str(row['weight']).strip() != "" else 0.0
         }
     return None
 
@@ -52,23 +51,23 @@ def register_new_item(tag_id):
     
     item_code = f"ITEM-{datetime.datetime.now().strftime('%Y%m%d-%H%M%S')}"
     
-    # 1. Tagsシートの更新
+    # 【追加】文字型に変換してエラーを防止
+    tags_df['current_item_code'] = tags_df['current_item_code'].astype('object')
+    
     if tag_id in tags_df['tag_id'].values:
         tags_df.loc[tags_df['tag_id'] == tag_id, 'current_item_code'] = item_code
     else:
         new_tag = pd.DataFrame({'tag_id': [tag_id], 'current_item_code': [item_code]})
         tags_df = pd.concat([tags_df, new_tag], ignore_index=True)
         
-    # 2. Itemsシートの更新
     new_item = pd.DataFrame({
         'item_code': [item_code], 
-        'sprout_date': [""], 
-        'bloom_date': [""], 
+        'sprout_date': [None], # "" ではなく None を使ってスプレッドシートを綺麗に保ちます
+        'bloom_date': [None], 
         'weight': [0.0]
     })
     items_df = pd.concat([items_df, new_item], ignore_index=True)
     
-    # スプレッドシートに書き込み
     conn.update(worksheet="Tags", data=tags_df)
     conn.update(worksheet="Items", data=items_df)
     
@@ -76,23 +75,29 @@ def register_new_item(tag_id):
 
 def update_item_info(item_code, sprout, bloom, weight):
     items_df = load_items()
+    
+    # 【追加】空の列が数値型として扱われるのを防ぐため、明示的に文字型（object）に変換
+    items_df['sprout_date'] = items_df['sprout_date'].astype('object')
+    items_df['bloom_date'] = items_df['bloom_date'].astype('object')
+    
     idx = items_df[items_df['item_code'] == item_code].index
     if not idx.empty:
-        items_df.loc[idx, 'sprout_date'] = sprout if sprout else ""
-        items_df.loc[idx, 'bloom_date'] = bloom if bloom else ""
-        items_df.loc[idx, 'weight'] = weight
+        # 空文字ではなく None を代入することでエラーを回避
+        items_df.loc[idx, 'sprout_date'] = sprout if sprout else None
+        items_df.loc[idx, 'bloom_date'] = bloom if bloom else None
+        items_df.loc[idx, 'weight'] = float(weight)
         conn.update(worksheet="Items", data=items_df)
 
 def clear_tag_link(tag_id):
     tags_df = load_tags()
+    tags_df['current_item_code'] = tags_df['current_item_code'].astype('object')
     idx = tags_df[tags_df['tag_id'] == tag_id].index
     if not idx.empty:
-        tags_df.loc[idx, 'current_item_code'] = "" # 空文字列でリンク解除
+        tags_df.loc[idx, 'current_item_code'] = None 
         conn.update(worksheet="Tags", data=tags_df)
 
 def parse_date(date_str):
     if date_str and pd.notna(date_str) and str(date_str).strip() != "":
-        # スプレッドシートからの日付は文字列として処理
         return datetime.datetime.strptime(str(date_str), "%Y-%m-%d").date()
     return None
 
