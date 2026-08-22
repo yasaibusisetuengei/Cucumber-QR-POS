@@ -5,6 +5,7 @@ import datetime
 import cv2
 import numpy as np
 import urllib.request
+import time
 
 # --- ページ設定とデータベース接続 ---
 st.set_page_config(page_title="🥒 キュウリ管理＆判定システム", layout="wide")
@@ -52,23 +53,39 @@ COLOR_CURVE_LINE = (255, 0, 0)
 COLOR_THICKNESS = (255, 0, 255)
 
 # ==========================================
-# 2. データベース操作関数 (APIエラー対策版)
+# 2. データベース操作関数 (リトライ機能付きAPIエラー対策版)
 # ==========================================
 def load_tags():
-    # ttl=600でキャッシュを有効化（無駄なAPI通信を削減）
-    df = conn.read(worksheet="Tags", ttl=600, dtype=str)
-    return df.fillna("")
+    # エラーが起きても最大3回まで自動で再試行する
+    for attempt in range(3):
+        try:
+            df = conn.read(worksheet="Tags", ttl=600, dtype=str)
+            return df.fillna("")
+        except Exception as e:
+            if attempt < 2:
+                time.sleep(2) # 2秒待機して再リクエスト
+            else:
+                st.error("⚠️ Google Sheetsのアクセス制限に達しています。1〜2分待ってから再度お試しください。")
+                st.stop()
 
 def load_items():
-    df = conn.read(worksheet="Items", ttl=600, dtype=str)
-    for col in ['weight', 'length', 'thickness', 'curve']:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
-            
-    for col in df.columns:
-        if col not in ['weight', 'length', 'thickness', 'curve']:
-            df[col] = df[col].fillna("")
-    return df
+    for attempt in range(3):
+        try:
+            df = conn.read(worksheet="Items", ttl=600, dtype=str)
+            for col in ['weight', 'length', 'thickness', 'curve']:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
+                    
+            for col in df.columns:
+                if col not in ['weight', 'length', 'thickness', 'curve']:
+                    df[col] = df[col].fillna("")
+            return df
+        except Exception as e:
+            if attempt < 2:
+                time.sleep(2)
+            else:
+                st.error("⚠️ Google Sheetsのアクセス制限に達しています。1〜2分待ってから再度お試しください。")
+                st.stop()
 
 def get_tag_info(tag_id):
     tags_df = load_tags()
@@ -275,25 +292,6 @@ def process_measurement(image):
     return res_img, html, length_cm, avg_thick_cm, curve_cm, display_grade, warped
 
 # ==========================================
-# 🌟 入力更新用のコールバック関数
-# ==========================================
-def update_area_cb(code):
-    val = st.session_state[f"area_{code}"]
-    update_item_record(code, area_number=str(val))
-    st.toast("✅ エリア番号を更新しました")
-
-def update_date_cb(code, field_name, label, key):
-    val = st.session_state[key]
-    date_str = val.strftime("%Y-%m-%d") if val else ""
-    update_item_record(code, **{field_name: date_str})
-    st.toast(f"✅ {label}を更新しました")
-
-def update_comment_cb(code):
-    val = st.session_state[f"comment_{code}"]
-    update_item_record(code, comment=str(val))
-    st.toast("✅ コメントを更新しました")
-
-# ==========================================
 # 4. Streamlit UI 構成 (タブ切り替え)
 # ==========================================
 tab1, tab2 = st.tabs(["🌱 生育記録", "🥒 収穫・階級判定"])
@@ -361,7 +359,7 @@ with tab1:
                     if updated:
                         update_item_record(item_code, sprout_date=s_date_str, bloom_date=b_date_str, harvest_date=h_date_str)
                         st.success("🌱 スキャンを検知し、自動でデータベースを更新しました！")
-                # 処理済みフラグを立てて、消去ボタン後の再自動登録を防ぐ
+                # 処理済みフラグを立てて再自動登録を防ぐ
                 st.session_state.processed_qrs.add(tag_id)
 
             def parse_date(d_str):
@@ -382,44 +380,37 @@ with tab1:
             current_area = clean_date_str(item_data.get('area_number', "1"))
             if current_area not in area_opts: current_area = "1"
             
-            # コールバックによる入力即時反映
-            st.selectbox(
-                "試験エリア番号", area_opts, index=area_opts.index(current_area),
-                key=f"area_{item_code}", on_change=update_area_cb, args=(item_code,)
-            )
-            
-            col_a, col_b, col_c = st.columns(3)
-            with col_a:
-                st.date_input(
-                    "発芽日", value=s_date_val, key=f"s_{item_code}", 
-                    on_change=update_date_cb, args=(item_code, "sprout_date", "発芽日", f"s_{item_code}")
-                )
-                if st.button("🗑️ 発芽日を消去", key=f"clr_s_{item_code}", use_container_width=True):
-                    update_item_record(item_code, sprout_date="")
-                    st.rerun()
+            # 🌟 st.formを使用して入力をグループ化し、API通信を一括化
+            with st.form(key=f"form_{item_code}"):
+                new_area = st.selectbox("試験エリア番号", area_opts, index=area_opts.index(current_area))
+                
+                col_a, col_b, col_c = st.columns(3)
+                with col_a:
+                    new_s_date = st.date_input("発芽日", value=s_date_val)
+                with col_b:
+                    new_b_date = st.date_input("開花日", value=b_date_val)
+                with col_c:
+                    new_h_date = st.date_input("収穫日", value=h_date_val)
+                
+                new_comment = st.text_area("コメント（自由入力）", value=clean_date_str(item_data.get('comment', '')))
+                
+                # 日付を空にしたい場合は、入力欄の文字を削除（バックスペース）してから更新ボタンを押してください
+                submit_btn = st.form_submit_button("💾 記録をまとめて更新する", type="primary")
+                
+                if submit_btn:
+                    s_str = new_s_date.strftime("%Y-%m-%d") if new_s_date else ""
+                    b_str = new_b_date.strftime("%Y-%m-%d") if new_b_date else ""
+                    h_str = new_h_date.strftime("%Y-%m-%d") if new_h_date else ""
                     
-            with col_b:
-                st.date_input(
-                    "開花日", value=b_date_val, key=f"b_{item_code}", 
-                    on_change=update_date_cb, args=(item_code, "bloom_date", "開花日", f"b_{item_code}")
-                )
-                if st.button("🗑️ 開花日を消去", key=f"clr_b_{item_code}", use_container_width=True):
-                    update_item_record(item_code, bloom_date="")
-                    st.rerun()
-                    
-            with col_c:
-                st.date_input(
-                    "収穫日", value=h_date_val, key=f"h_{item_code}", 
-                    on_change=update_date_cb, args=(item_code, "harvest_date", "収穫日", f"h_{item_code}")
-                )
-                if st.button("🗑️ 収穫日を消去", key=f"clr_h_{item_code}", use_container_width=True):
-                    update_item_record(item_code, harvest_date="")
-                    st.rerun()
-            
-            st.text_area(
-                "コメント（自由入力）", value=clean_date_str(item_data.get('comment', '')),
-                key=f"comment_{item_code}", on_change=update_comment_cb, args=(item_code,)
-            )
+                    update_item_record(
+                        item_code, 
+                        area_number=str(new_area), 
+                        sprout_date=s_str, 
+                        bloom_date=b_str, 
+                        harvest_date=h_str, 
+                        comment=str(new_comment)
+                    )
+                    st.success(f"✅ アイテム【{item_code}】の記録を更新しました！")
                 
         else:
             st.error("QRコードを検出できませんでした。別の画像を選択するか、再撮影してください。")
