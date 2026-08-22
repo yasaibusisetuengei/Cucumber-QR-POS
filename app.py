@@ -4,7 +4,6 @@ import pandas as pd
 import datetime
 import cv2
 import numpy as np
-from typing import Tuple, Optional
 
 # --- ページ設定とデータベース接続 ---
 st.set_page_config(page_title="🥒 キュウリ管理＆判定システム", layout="wide")
@@ -24,10 +23,6 @@ COLOR_CONTOUR = (0, 255, 0)
 COLOR_TABLE_LINE = (255, 255, 0)
 COLOR_CURVE_LINE = (255, 0, 0)
 COLOR_THICKNESS = (255, 0, 255)
-COLOR_ERROR_TEXT = (0, 0, 255)
-
-TOLERANCE_PCT_LENGTH, TOLERANCE_PCT_THICKNESS, TOLERANCE_PCT_CURVE = 15.0, 20.0, 30.0
-MIN_TOLERANCE_CM = 0.5
 
 # ==========================================
 # 2. データベース操作関数
@@ -38,7 +33,6 @@ def load_tags():
 
 def load_items():
     df = conn.read(worksheet="Items", ttl=0, dtype=str)
-    # 数値計算する列の安全処理
     for col in ['weight', 'length', 'thickness', 'curve']:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
@@ -200,7 +194,7 @@ def draw_results(warped, contour, ds, de, cp, foot, hp1, hp2, tp1, tp2):
     if tp1 is not None and tp2 is not None: cv2.line(res, tuple(tp1.astype(int)), tuple(tp2.astype(int)), COLOR_THICKNESS, 3)
     return res
 
-def process_quiz(image, pred_len, pred_thick, pred_curve):
+def process_measurement(image):
     if image is None: return None, "画像がありません", None, None, None, None
     warped, err = detect_and_warp(image)
     if err: return image, f"<h3 style='color:red;'>{err}</h3>", None, None, None, None
@@ -213,26 +207,18 @@ def process_quiz(image, pred_len, pred_thick, pred_curve):
     tail_thick_cm, tp1, tp2 = calculate_thickness(end2, end1, DIST_5CM_PX, contour)
     avg_thick_cm = (head_thick_cm + tail_thick_cm) / 2.0 if head_thick_cm > 0 else 1.5
 
-    d_len, d_thick, d_curve = abs(pred_len - length_cm), abs(pred_thick - avg_thick_cm), abs(pred_curve - curve_cm)
-    a_len = max(length_cm * (TOLERANCE_PCT_LENGTH / 100.0), MIN_TOLERANCE_CM)
-    a_thick = max(avg_thick_cm * (TOLERANCE_PCT_THICKNESS / 100.0), MIN_TOLERANCE_CM)
-    a_curve = max(curve_cm * (TOLERANCE_PCT_CURVE / 100.0), MIN_TOLERANCE_CM)
-
-    m_len, m_thick, m_curve = ("〇" if d_len<=a_len else "×"), ("〇" if d_thick<=a_thick else "×"), ("〇" if d_curve<=a_curve else "×")
-    bg_color, title = ("#d4edda", "大正解！🎉") if m_len=="〇" and m_thick=="〇" and m_curve=="〇" else ("#f8d7da", "おしかったね！💪")
-    
     grade, display_grade = evaluate_grade(length_cm, curve_cm, head_thick_cm, tail_thick_cm)
     rank_bg = {"A":"#e8f5e9", "B":"#fff3cd", "C":"#f8d7da"}.get(grade, "#f8f9fa")
     
     res_img = draw_results(warped, contour, ds, de, cp, foot, hp1, hp2, tp1, tp2)
     html = f"""
-    <div style="background-color: {bg_color}; padding: 20px; border-radius: 12px; color: black;">
-        <h2 style="text-align: center; margin-top: 0;">{title}</h2>
-        <p>📏 長さ: よそう {pred_len:.1f}cm ➔ 実測 <b>{length_cm:.1f}cm</b> 【{m_len}】</p>
-        <p>⭕ 太さ: よそう {pred_thick:.1f}cm ➔ 実測 <b>{avg_thick_cm:.1f}cm</b> 【{m_thick}】</p>
-        <p>〰️ 曲がり: よそう {pred_curve:.1f}cm ➔ 実測 <b>{curve_cm:.1f}cm</b> 【{m_curve}】</p>
-        <div style="background-color: {rank_bg}; padding: 10px; text-align: center; font-size: 1.2em; border-radius: 8px;">
-            <b>ランク: {display_grade}</b>
+    <div style="background-color: #ffffff; padding: 20px; border-radius: 12px; border: 1px solid #e0e0e0; color: black;">
+        <h3 style="text-align: center; margin-top: 0; color: #2e7d32;">📐 計測・判定結果</h3>
+        <p>📏 <b>長さ:</b> {length_cm:.1f} cm</p>
+        <p>⭕ <b>太さ:</b> {avg_thick_cm:.1f} cm</p>
+        <p>〰️ <b>曲がり:</b> {curve_cm:.1f} cm</p>
+        <div style="background-color: {rank_bg}; padding: 12px; text-align: center; font-size: 1.2em; border-radius: 8px; margin-top: 10px;">
+            <b>階級: {display_grade}</b>
         </div>
     </div>
     """
@@ -246,7 +232,6 @@ tab1, tab2 = st.tabs(["🌱 生育記録", "🥒 収穫・階級判定"])
 # --- タブ1: 生育記録 ---
 with tab1:
     st.header("🌱 生育記録 (QRスキャン)")
-    # Take photoを押した瞬間に再レンダリングされ即座に下の処理へ進みます
     qr_img = st.camera_input("QRコードを撮影（撮影後、すぐに情報が表示されます）", key="qr_camera")
     
     if qr_img is not None:
@@ -267,7 +252,6 @@ with tab1:
             with st.form("growth_record_form"):
                 st.write(f"📝 編集対象コード: `{item_code}`")
                 
-                # エリア選択リスト（1〜12）
                 area_opts = [str(i) for i in range(1, 13)]
                 current_area = str(item_data.get('area_number', "1"))
                 if current_area not in area_opts: current_area = "1"
@@ -304,28 +288,22 @@ with tab2:
         img_source = st.radio("画像入力", ["カメラ", "アップロード"])
         c_img = st.camera_input("キュウリを撮影（A4マーカー枠必須）") if img_source == "カメラ" else st.file_uploader("画像を選択", type=["jpg", "jpeg", "png"])
         
-        pred_length = st.slider("① 長さのよそう (cm)", 5.0, 35.0, 20.0, 0.5)
-        pred_thick = st.slider("② 太さのよそう (cm)", 0.5, 5.0, 2.0, 0.1)
-        pred_curve = st.slider("③ 曲がりのよそう (cm)", 0.0, 10.0, 0.5, 0.1)
-        
-        grade_btn = st.button("✨ こたえあわせ＆判定する", type="primary")
+        grade_btn = st.button("📏 計測", type="primary")
 
     with col2:
         if grade_btn and c_img is not None:
             file_bytes = np.asarray(bytearray(c_img.read()), dtype=np.uint8)
             cv_img = cv2.imdecode(file_bytes, 1)
-            cv_img = cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB) # Streamlit描画用にRGB化
+            cv_img = cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB)
             
-            res_img, html, l_cm, t_cm, c_cm, grade_str = process_quiz(cv_img, pred_length, pred_thick, pred_curve)
+            res_img, html, l_cm, t_cm, c_cm, grade_str = process_measurement(cv_img)
             
             if res_img is not None: st.image(res_img, channels="RGB")
             st.markdown(html, unsafe_allow_html=True)
             
-            # 結果をセッションに一時保存（下部の登録フォームで使うため）
             if l_cm is not None:
                 st.session_state['last_eval'] = {'length': l_cm, 'thickness': t_cm, 'curve': c_cm, 'grade': grade_str}
 
-    # 判定結果のデータベース登録セクション
     if 'last_eval' in st.session_state:
         st.divider()
         st.subheader("📝 判定結果をデータベースに登録")
