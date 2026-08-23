@@ -1,4 +1,5 @@
 import streamlit as st
+import streamlit.components.v1 as components
 from streamlit_gsheets import GSheetsConnection
 import pandas as pd
 import datetime
@@ -10,6 +11,58 @@ import time
 # --- ページ設定とデータベース接続 ---
 st.set_page_config(page_title="🥒 キュウリ管理＆判定システム", layout="wide")
 conn = st.connection("gsheets", type=GSheetsConnection)
+
+# ==========================================
+# 🌟 Session State・初期設定の初期化
+# ==========================================
+if "config" not in st.session_state:
+    st.session_state.config = {
+        "area_options": [str(i) for i in range(1, 13)],
+        "label_sprout": "発芽日",
+        "label_bloom": "開花日",
+        "label_harvest": "収穫日",
+        "label_area": "試験エリア番号",
+        "label_comment": "コメント（自由入力）",
+        "sheet_tags": "Tags",
+        "sheet_items": "Items",
+    }
+
+if "grade_result" not in st.session_state:
+    st.session_state.grade_result = None
+if "processed_qrs" not in st.session_state:
+    st.session_state.processed_qrs = set()
+
+def clear_grade_result():
+    st.session_state.grade_result = None
+
+# ==========================================
+# 🔔 音・振動でお知らせする機能 (JavaScript)
+# ==========================================
+def trigger_notification():
+    """QRスキャン成功時に音(Beep)と振動(Vibration)を呼び出す"""
+    components.html("""
+        <script>
+        // 振動 (スマホ等の対応端末)
+        if (navigator.vibrate) {
+            navigator.vibrate([150, 100, 150]);
+        }
+        // Web Audio API によるお知らせ音 (880Hz ピッ)
+        try {
+            var audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            var osc = audioCtx.createOscillator();
+            var gain = audioCtx.createGain();
+            osc.type = 'sine';
+            osc.frequency.setValueAtTime(880, audioCtx.currentTime);
+            gain.gain.setValueAtTime(0.15, audioCtx.currentTime);
+            osc.connect(gain);
+            gain.connect(audioCtx.destination);
+            osc.start();
+            osc.stop(audioCtx.currentTime + 0.15);
+        } catch(e) {
+            console.log(e);
+        }
+        </script>
+    """, height=0, width=0)
 
 # ==========================================
 # 🌟 GitHub サンプル画像のURL設定
@@ -27,17 +80,6 @@ def get_image_bytes_from_url(url):
         return None
 
 # ==========================================
-# 🌟 Session State の初期化
-# ==========================================
-if "grade_result" not in st.session_state:
-    st.session_state.grade_result = None
-if "processed_qrs" not in st.session_state:
-    st.session_state.processed_qrs = set()
-
-def clear_grade_result():
-    st.session_state.grade_result = None
-
-# ==========================================
 # 1. 階級判定用の定数設定
 # ==========================================
 A4_W_MM, A4_H_MM = 297.0, 210.0
@@ -53,25 +95,26 @@ COLOR_CURVE_LINE = (255, 0, 0)
 COLOR_THICKNESS = (255, 0, 255)
 
 # ==========================================
-# 2. データベース操作関数 (リトライ機能付きAPIエラー対策版)
+# 2. データベース操作関数 (リトライ機能付き)
 # ==========================================
 def load_tags():
-    # エラーが起きても最大3回まで自動で再試行する
+    sheet_name = st.session_state.config.get("sheet_tags", "Tags")
     for attempt in range(3):
         try:
-            df = conn.read(worksheet="Tags", ttl=600, dtype=str)
+            df = conn.read(worksheet=sheet_name, ttl=600, dtype=str)
             return df.fillna("")
         except Exception as e:
             if attempt < 2:
-                time.sleep(2) # 2秒待機して再リクエスト
+                time.sleep(2)
             else:
-                st.error("⚠️ Google Sheetsのアクセス制限に達しています。1〜2分待ってから再度お試しください。")
+                st.error(f"⚠️ Google Sheets ({sheet_name}) のアクセス制限に達しています。しばらく待ってから再試行してください。")
                 st.stop()
 
 def load_items():
+    sheet_name = st.session_state.config.get("sheet_items", "Items")
     for attempt in range(3):
         try:
-            df = conn.read(worksheet="Items", ttl=600, dtype=str)
+            df = conn.read(worksheet=sheet_name, ttl=600, dtype=str)
             for col in ['weight', 'length', 'thickness', 'curve']:
                 if col in df.columns:
                     df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
@@ -84,7 +127,7 @@ def load_items():
             if attempt < 2:
                 time.sleep(2)
             else:
-                st.error("⚠️ Google Sheetsのアクセス制限に達しています。1〜2分待ってから再度お試しください。")
+                st.error(f"⚠️ Google Sheets ({sheet_name}) のアクセス制限に達しています。しばらく待ってから再試行してください。")
                 st.stop()
 
 def get_tag_info(tag_id):
@@ -114,9 +157,11 @@ def register_new_item(tag_id):
     })
     items_df = pd.concat([items_df, new_item], ignore_index=True)
     
-    conn.update(worksheet="Tags", data=tags_df)
-    conn.update(worksheet="Items", data=items_df)
-    st.cache_data.clear() # DB書き込み後にキャッシュをクリアして最新状態へ
+    sheet_tags = st.session_state.config.get("sheet_tags", "Tags")
+    sheet_items = st.session_state.config.get("sheet_items", "Items")
+    conn.update(worksheet=sheet_tags, data=tags_df)
+    conn.update(worksheet=sheet_items, data=items_df)
+    st.cache_data.clear()
     return item_code
 
 def update_item_record(item_code, **kwargs):
@@ -131,8 +176,9 @@ def update_item_record(item_code, **kwargs):
             items_df[key] = items_df[key].astype(object)
             items_df.loc[idx, key] = val
             
-        conn.update(worksheet="Items", data=items_df)
-        st.cache_data.clear() # DB書き込み後にキャッシュをクリア
+        sheet_items = st.session_state.config.get("sheet_items", "Items")
+        conn.update(worksheet=sheet_items, data=items_df)
+        st.cache_data.clear()
 
 def unbind_tag(tag_id):
     tags_df = load_tags()
@@ -140,7 +186,8 @@ def unbind_tag(tag_id):
     idx = tags_df[tags_df['tag_id'] == str(tag_id)].index
     if not idx.empty:
         tags_df.loc[idx, 'current_item_code'] = ""
-        conn.update(worksheet="Tags", data=tags_df)
+        sheet_tags = st.session_state.config.get("sheet_tags", "Tags")
+        conn.update(worksheet=sheet_tags, data=tags_df)
         st.cache_data.clear()
         return True
     return False
@@ -294,11 +341,12 @@ def process_measurement(image):
 # ==========================================
 # 4. Streamlit UI 構成 (タブ切り替え)
 # ==========================================
-tab1, tab2 = st.tabs(["🌱 生育記録", "🥒 収穫・階級判定"])
+tab1, tab2, tab3 = st.tabs(["🌱 生育記録", "🥒 収穫・階級判定", "⚙️ 初期設定"])
 
 # --- タブ1: 生育記録 ---
 with tab1:
     st.header("🌱 生育記録 (QRスキャン)")
+    cfg = st.session_state.config
     
     img_source_qr = st.radio("入力方法", ["カメラ", "アップロード", "サンプル画像 (sample1)"], key="qr_radio")
     
@@ -322,6 +370,11 @@ with tab1:
         tag_id = read_qr_from_bytes(file_bytes_qr)
         
         if tag_id:
+            # 🔔 新しいスキャン検出時に音と振動でフィードバック
+            if tag_id not in st.session_state.processed_qrs:
+                trigger_notification()
+                st.session_state.processed_qrs.add(tag_id)
+
             st.success(f"🏷️ タグを認識しました: {tag_id}")
             item_code = get_tag_info(tag_id)
             if not item_code:
@@ -334,7 +387,7 @@ with tab1:
             
             def clean_date_str(val):
                 s = str(val).strip()
-                return "" if s == "nan" or s == "None" else s
+                return "" if s in ["nan", "None", ""] else s
 
             s_date_str = clean_date_str(item_data.get('sprout_date', ''))
             b_date_str = clean_date_str(item_data.get('bloom_date', ''))
@@ -343,24 +396,19 @@ with tab1:
             today_date = datetime.date.today()
             today_str = today_date.strftime("%Y-%m-%d")
             
-            # 🌟 初回スキャン時のみ自動更新を実行（ループ防止）
-            if tag_id not in st.session_state.processed_qrs:
-                if today_str in [s_date_str, b_date_str, h_date_str]:
-                    st.info("✅ 本日読み込み済みです。")
-                else:
-                    updated = False
-                    if not s_date_str:
-                        s_date_str, updated = today_str, True
-                    elif not b_date_str:
-                        b_date_str, updated = today_str, True
-                    elif not h_date_str:
-                        h_date_str, updated = today_str, True
-                    
-                    if updated:
-                        update_item_record(item_code, sprout_date=s_date_str, bloom_date=b_date_str, harvest_date=h_date_str)
-                        st.success("🌱 スキャンを検知し、自動でデータベースを更新しました！")
-                # 処理済みフラグを立てて再自動登録を防ぐ
-                st.session_state.processed_qrs.add(tag_id)
+            # 自動日付入力（未入力項目に今日の日付を追加）
+            if today_str not in [s_date_str, b_date_str, h_date_str]:
+                updated = False
+                if not s_date_str:
+                    s_date_str, updated = today_str, True
+                elif not b_date_str:
+                    b_date_str, updated = today_str, True
+                elif not h_date_str:
+                    h_date_str, updated = today_str, True
+                
+                if updated:
+                    update_item_record(item_code, sprout_date=s_date_str, bloom_date=b_date_str, harvest_date=h_date_str)
+                    st.success("🌱 スキャンを検知し、自動で日付を記録しました！")
 
             def parse_date(d_str):
                 if d_str:
@@ -376,31 +424,35 @@ with tab1:
             
             st.write(f"📝 編集対象コード: `{item_code}`")
             
-            area_opts = [str(i) for i in range(1, 13)]
+            area_opts = cfg.get("area_options", [str(i) for i in range(1, 13)])
             current_area = clean_date_str(item_data.get('area_number', "1"))
-            if current_area not in area_opts: current_area = "1"
+            if current_area not in area_opts and len(area_opts) > 0:
+                current_area = area_opts[0]
             
-            # 🌟 st.formを使用して入力をグループ化し、API通信を一括化
+            # 🌟 フォーム内に入力＆「日付消去チェック」を追加して復元
             with st.form(key=f"form_{item_code}"):
-                new_area = st.selectbox("試験エリア番号", area_opts, index=area_opts.index(current_area))
+                new_area = st.selectbox(cfg.get("label_area", "試験エリア番号"), area_opts, index=area_opts.index(current_area) if current_area in area_opts else 0)
                 
                 col_a, col_b, col_c = st.columns(3)
                 with col_a:
-                    new_s_date = st.date_input("発芽日", value=s_date_val)
+                    new_s_date = st.date_input(cfg.get("label_sprout", "発芽日"), value=s_date_val)
+                    clear_s = st.checkbox("🗑️ 発芽日を消去", value=False)
                 with col_b:
-                    new_b_date = st.date_input("開花日", value=b_date_val)
+                    new_b_date = st.date_input(cfg.get("label_bloom", "開花日"), value=b_date_val)
+                    clear_b = st.checkbox("🗑️ 開花日を消去", value=False)
                 with col_c:
-                    new_h_date = st.date_input("収穫日", value=h_date_val)
+                    new_h_date = st.date_input(cfg.get("label_harvest", "収穫日"), value=h_date_val)
+                    clear_h = st.checkbox("🗑️ 収穫日を消去", value=False)
                 
-                new_comment = st.text_area("コメント（自由入力）", value=clean_date_str(item_data.get('comment', '')))
+                new_comment = st.text_area(cfg.get("label_comment", "コメント"), value=clean_date_str(item_data.get('comment', '')))
                 
-                # 日付を空にしたい場合は、入力欄の文字を削除（バックスペース）してから更新ボタンを押してください
                 submit_btn = st.form_submit_button("💾 記録をまとめて更新する", type="primary")
                 
                 if submit_btn:
-                    s_str = new_s_date.strftime("%Y-%m-%d") if new_s_date else ""
-                    b_str = new_b_date.strftime("%Y-%m-%d") if new_b_date else ""
-                    h_str = new_h_date.strftime("%Y-%m-%d") if new_h_date else ""
+                    # 消去チェックが入っている場合は空文字にする
+                    s_str = "" if clear_s else (new_s_date.strftime("%Y-%m-%d") if new_s_date else "")
+                    b_str = "" if clear_b else (new_b_date.strftime("%Y-%m-%d") if new_b_date else "")
+                    h_str = "" if clear_h else (new_h_date.strftime("%Y-%m-%d") if new_h_date else "")
                     
                     update_item_record(
                         item_code, 
@@ -456,6 +508,10 @@ with tab2:
                     warped_bgr = cv2.cvtColor(warped, cv2.COLOR_RGB2BGR)
                     data, _, _ = detector.detectAndDecode(warped_bgr)
                     tag_id = str(data).strip() if data else None
+
+            # 🔔 タグ認識時に通知音
+            if tag_id:
+                trigger_notification()
             
             st.session_state.grade_result = {
                 'res_img': res_img,
@@ -507,3 +563,46 @@ with tab2:
                     st.warning(f"タグ【{unbind_target_tag}】が見つからないか、すでに解除されています。")
             else:
                 st.error("タグ番号を入力してください。")
+
+# --- タブ3: 初期設定 ---
+with tab3:
+    st.header("⚙️ 初期設定")
+    st.write("システムの表示名称や、スプレッドシートの各設定を変更できます。")
+    
+    with st.form("config_form"):
+        st.subheader("1. 画面上の表示名称（ラベル）")
+        col1, col2 = st.columns(2)
+        with col1:
+            lbl_sprout = st.text_input("発芽日の項目名", value=st.session_state.config.get("label_sprout", "発芽日"))
+            lbl_bloom = st.text_input("開花日の項目名", value=st.session_state.config.get("label_bloom", "開花日"))
+            lbl_harvest = st.text_input("収穫日の項目名", value=st.session_state.config.get("label_harvest", "収穫日"))
+        with col2:
+            lbl_area = st.text_input("エリア番号の項目名", value=st.session_state.config.get("label_area", "試験エリア番号"))
+            lbl_comment = st.text_input("コメントの項目名", value=st.session_state.config.get("label_comment", "コメント（自由入力）"))
+        
+        st.subheader("2. 試験エリア番号の選択肢")
+        current_areas_str = ", ".join(st.session_state.config.get("area_options", [str(i) for i in range(1, 13)]))
+        new_areas_str = st.text_area("選択肢一覧（カンマ区切りで入力してください）", value=current_areas_str, help="例: 1, 2, 3, 4, A区, B区")
+        
+        st.subheader("3. Google スプレッドシートのシート名")
+        col_s1, col_s2 = st.columns(2)
+        with col_s1:
+            sh_tags = st.text_input("タグ管理シート名", value=st.session_state.config.get("sheet_tags", "Tags"))
+        with col_s2:
+            sh_items = st.text_input("アイテム詳細シート名", value=st.session_state.config.get("sheet_items", "Items"))
+            
+        save_cfg_btn = st.form_submit_button("⚙️ 設定を保存する", type="primary")
+        
+        if save_cfg_btn:
+            parsed_areas = [a.strip() for a in new_areas_str.split(",") if a.strip() != ""]
+            
+            st.session_state.config["label_sprout"] = lbl_sprout
+            st.session_state.config["label_bloom"] = lbl_bloom
+            st.session_state.config["label_harvest"] = lbl_harvest
+            st.session_state.config["label_area"] = lbl_area
+            st.session_state.config["label_comment"] = lbl_comment
+            st.session_state.config["area_options"] = parsed_areas if parsed_areas else [str(i) for i in range(1, 13)]
+            st.session_state.config["sheet_tags"] = sh_tags
+            st.session_state.config["sheet_items"] = sh_items
+            
+            st.success("✅ 設定を保存しました！各タブに反映されます。")
