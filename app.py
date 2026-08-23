@@ -217,7 +217,7 @@ def read_qr_from_bytes(file_bytes):
     return str(data).strip() if data else None
 
 # ==========================================
-# 3. OpenCV 画像処理・計測関数 (省略せず配置)
+# 3. OpenCV 画像処理・計測関数
 # ==========================================
 def detect_and_warp(image: np.ndarray):
     aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
@@ -469,6 +469,10 @@ with tab1:
                     st.session_state[f"d{i+1}_{item_code}"] = st.date_input(lbl, value=st.session_state[f"d{i+1}_{item_code}"], key=f"date_input_{i}_{item_code}")
                     if st.button(f"🗑️ {lbl}を消去", key=f"clear_d{i+1}_{item_code}"):
                         st.session_state[f"d{i+1}_{item_code}"] = None
+                        # ★修正ポイント：Widgetのセッションキー自体を削除することで、即座に空の状態で再描画させる
+                        widget_key = f"date_input_{i}_{item_code}"
+                        if widget_key in st.session_state:
+                            del st.session_state[widget_key]
                         st.rerun()
             
             new_comment = st.text_area("コメント（自由入力）", value=clean_date_str(item_data.get('comment', '')))
@@ -648,68 +652,107 @@ with tab3:
             a4_w_px, a4_h_px = int(210 * mm_to_px), int(297 * mm_to_px)
             qr_size_px = int(qr_size * mm_to_px)
             margin_px = int(10 * mm_to_px)
-            text_height_px = int(8 * mm_to_px)
+            
+            # タグ1枚あたりのサイズ（QRコード + 上部の穴スペース + 下部余白）
+            top_padding = int(15 * mm_to_px)
+            bottom_padding = int(5 * mm_to_px)
+            tag_w_px = qr_size_px + int(10 * mm_to_px) # 左右の余白
+            tag_h_px = qr_size_px + top_padding + bottom_padding
             
             usable_w = a4_w_px - margin_px * 2
             usable_h = a4_h_px - margin_px * 2
-            cols = usable_w // qr_size_px
-            rows = usable_h // (qr_size_px + text_height_px)
+            cols = usable_w // tag_w_px
+            rows = usable_h // tag_h_px
             
-            pages = []
-            current_page = Image.new("RGB", (a4_w_px, a4_h_px), "white")
-            draw = ImageDraw.Draw(current_page)
-            
-            try:
-                # 文字を描画するためのフォント指定 (標準代替)
-                font = ImageFont.truetype("arial.ttf", int(5 * mm_to_px))
-            except IOError:
-                font = ImageFont.load_default()
-
-            x_idx, y_idx = 0, 0
-            for num in range(qr_start, qr_end + 1):
-                tag_str = str(num)
-                qr = qrcode.make(tag_str)
-                qr = qr.resize((qr_size_px, qr_size_px))
+            if cols == 0 or rows == 0:
+                st.error("指定されたQRコードサイズが大きすぎてA4に配置できません。サイズを小さくしてください。")
+            else:
+                pages = []
+                current_page = Image.new("RGB", (a4_w_px, a4_h_px), "white")
                 
-                # 配置するマスの左上座標
-                x = margin_px + x_idx * qr_size_px
-                y = margin_px + y_idx * (qr_size_px + text_height_px)
-                
-                # 中央寄せのための余白を計算してオフセット
-                x_offset = (usable_w - (cols * qr_size_px)) // 2
-                y_offset = (usable_h - (rows * (qr_size_px + text_height_px))) // 2
-                
-                final_x = x + x_offset
-                final_y = y + y_offset
-                
-                current_page.paste(qr, (final_x, final_y))
-                # テキストの描画(QRの下部中央)
-                bbox = draw.textbbox((0, 0), tag_str, font=font)
-                text_w = bbox[2] - bbox[0]
-                draw.text((final_x + qr_size_px // 2 - text_w // 2, final_y + qr_size_px), tag_str, fill="black", font=font)
-                
-                x_idx += 1
-                if x_idx >= cols:
-                    x_idx = 0
-                    y_idx += 1
-                    if y_idx >= rows:
-                        pages.append(current_page)
-                        current_page = Image.new("RGB", (a4_w_px, a4_h_px), "white")
-                        draw = ImageDraw.Draw(current_page)
-                        x_idx, y_idx = 0, 0
-            
-            if x_idx > 0 or y_idx > 0:
-                pages.append(current_page)
-                
-            pdf_bytes = BytesIO()
-            if pages:
-                pages[0].save(pdf_bytes, format="PDF", save_all=True, append_images=pages[1:])
-                st.session_state.pdf_data = pdf_bytes.getvalue()
-
-    if "pdf_data" in st.session_state:
-        st.download_button(
-            label="⬇️ 作成したPDFをダウンロード",
-            data=st.session_state.pdf_data,
-            file_name="qrcodes.pdf",
-            mime="application/pdf"
-        )
+                # 環境に合わせたフォントの取得
+                def get_font(size_px):
+                    try:
+                        return ImageFont.truetype("arial.ttf", size_px)
+                    except IOError:
+                        try:
+                            return ImageFont.truetype("DejaVuSans.ttf", size_px)
+                        except IOError:
+                            return ImageFont.load_default()
+                            
+                x_idx, y_idx = 0, 0
+                for num in range(qr_start, qr_end + 1):
+                    tag_str = str(num)
+                    
+                    # ★修正ポイント1：QRコード生成（高誤り訂正率を適用して中央印字による欠損を防ぐ）
+                    qr = qrcode.QRCode(
+                        version=1,
+                        error_correction=qrcode.constants.ERROR_CORRECT_H,
+                        box_size=10,
+                        border=1,
+                    )
+                    qr.add_data(tag_str)
+                    qr.make(fit=True)
+                    qr_img = qr.make_image(fill_color="black", back_color="white").convert("RGB")
+                    qr_img = qr_img.resize((qr_size_px, qr_size_px))
+                    
+                    qr_draw = ImageDraw.Draw(qr_img)
+                    font_size = int(qr_size_px * 0.25) # QRサイズの25%程度の大きさ
+                    qr_font = get_font(font_size)
+                    
+                    # 番号テキストの背景を白抜きにしてQRコード中央に描画
+                    bbox = qr_draw.textbbox((0, 0), tag_str, font=qr_font)
+                    tw = bbox[2] - bbox[0]
+                    th = bbox[3] - bbox[1]
+                    cx, cy = qr_size_px // 2, qr_size_px // 2
+                    pad = int(1.5 * mm_to_px)
+                    
+                    # 白背景を描画
+                    qr_draw.rectangle([cx - tw//2 - pad, cy - th//2 - pad, cx + tw//2 + pad, cy + th//2 + pad], fill="white")
+                    # テキストを描画
+                    qr_draw.text((cx - tw//2, cy - th//2 - bbox[1]), tag_str, fill="black", font=qr_font)
+                    
+                    # ★修正ポイント2：タグ画像の作成（切り取り線と穴の描画）
+                    tag_img = Image.new("RGB", (tag_w_px, tag_h_px), "white")
+                    tag_draw = ImageDraw.Draw(tag_img)
+                    
+                    # 切り取り線 (タグの外周をグレーの実線で囲む)
+                    tag_draw.rectangle([0, 0, tag_w_px - 1, tag_h_px - 1], outline="#aaaaaa", width=2)
+                    
+                    # 穴の位置 (上部中央に直径5mm程度の円を描画)
+                    hole_cx = tag_w_px // 2
+                    hole_cy = int(7.5 * mm_to_px)
+                    hole_r = int(2.5 * mm_to_px)
+                    tag_draw.ellipse([hole_cx - hole_r, hole_cy - hole_r, hole_cx + hole_r, hole_cy + hole_r], outline="#aaaaaa", width=2)
+                    
+                    # QRコードをタグ内に貼り付け
+                    tag_img.paste(qr_img, (int(5 * mm_to_px), top_padding))
+                    
+                    # ★修正ポイント3：ページ内へのレイアウト配置と改ページロジック
+                    x_offset = (usable_w - (cols * tag_w_px)) // 2
+                    y_offset = (usable_h - (rows * tag_h_px)) // 2
+                    
+                    final_x = margin_px + x_offset + x_idx * tag_w_px
+                    final_y = margin_px + y_offset + y_idx * tag_h_px
+                    
+                    current_page.paste(tag_img, (final_x, final_y))
+                    
+                    x_idx += 1
+                    if x_idx >= cols:
+                        x_idx = 0
+                        y_idx += 1
+                        if y_idx >= rows:
+                            pages.append(current_page)
+                            current_page = Image.new("RGB", (a4_w_px, a4_h_px), "white")
+                            x_idx, y_idx = 0, 0
+    
+                # 途中で終わったページをリストに追加
+                if x_idx > 0 or y_idx > 0:
+                    pages.append(current_page)
+                    
+                # PDFの出力生成
+                if pages:
+                    pdf_bytes = BytesIO()
+                    pages[0].save(pdf_bytes, format="PDF", save_all=True, append_images=pages[1:])
+                    st.download_button("📥 PDFをダウンロード", data=pdf_bytes.getvalue(), file_name="qr_codes.pdf", mime="application/pdf")
+                    st.success("✅ QRコードシート(PDF)の生成が完了しました！上のボタンからダウンロードしてください。")
