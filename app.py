@@ -1,5 +1,4 @@
 import streamlit as st
-import streamlit.components.v1 as components
 from streamlit_gsheets import GSheetsConnection
 import pandas as pd
 import datetime
@@ -7,62 +6,62 @@ import cv2
 import numpy as np
 import urllib.request
 import time
-
-# --- ページ設定とデータベース接続 ---
-st.set_page_config(page_title="🥒 キュウリ管理＆判定システム", layout="wide")
-conn = st.connection("gsheets", type=GSheetsConnection)
+import streamlit.components.v1 as components
 
 # ==========================================
-# 🌟 Session State・初期設定の初期化
+# 🌟 Session State の初期化 (設定・状態管理)
 # ==========================================
-if "config" not in st.session_state:
-    st.session_state.config = {
-        "area_options": [str(i) for i in range(1, 13)],
-        "label_sprout": "発芽日",
-        "label_bloom": "開花日",
-        "label_harvest": "収穫日",
-        "label_area": "試験エリア番号",
-        "label_comment": "コメント（自由入力）",
-        "sheet_tags": "Tags",
-        "sheet_items": "Items",
+if "settings" not in st.session_state:
+    st.session_state.settings = {
+        "crop_name": "キュウリ",
+        "emoji": "🥒",
+        "date1_label": "発芽日",
+        "date2_label": "開花日",
+        "date3_label": "収穫日"
     }
 
 if "grade_result" not in st.session_state:
     st.session_state.grade_result = None
 if "processed_qrs" not in st.session_state:
     st.session_state.processed_qrs = set()
+if "last_scanned_tag" not in st.session_state:
+    st.session_state.last_scanned_tag = None
 
 def clear_grade_result():
     st.session_state.grade_result = None
 
+# --- ページ設定とデータベース接続 ---
+c_name = st.session_state.settings["crop_name"]
+c_emoji = st.session_state.settings["emoji"]
+st.set_page_config(page_title=f"{c_emoji} {c_name}管理＆判定システム", layout="wide")
+conn = st.connection("gsheets", type=GSheetsConnection)
+
 # ==========================================
-# 🔔 音・振動でお知らせする機能 (JavaScript)
+# 🌟 通知音・振動機能 (JavaScript)
 # ==========================================
-def trigger_notification():
-    """QRスキャン成功時に音(Beep)と振動(Vibration)を呼び出す"""
-    components.html("""
-        <script>
-        // 振動 (スマホ等の対応端末)
+def play_notification_sound():
+    js_code = """
+    <script>
+    try {
+        // 振動 (モバイル端末用)
         if (navigator.vibrate) {
-            navigator.vibrate([150, 100, 150]);
+            navigator.vibrate([100, 50, 100]);
         }
-        // Web Audio API によるお知らせ音 (880Hz ピッ)
-        try {
-            var audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-            var osc = audioCtx.createOscillator();
-            var gain = audioCtx.createGain();
-            osc.type = 'sine';
-            osc.frequency.setValueAtTime(880, audioCtx.currentTime);
-            gain.gain.setValueAtTime(0.15, audioCtx.currentTime);
-            osc.connect(gain);
-            gain.connect(audioCtx.destination);
-            osc.start();
-            osc.stop(audioCtx.currentTime + 0.15);
-        } catch(e) {
-            console.log(e);
-        }
-        </script>
-    """, height=0, width=0)
+        // ピピッというビープ音
+        var audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        var oscillator = audioCtx.createOscillator();
+        var gainNode = audioCtx.createGain();
+        oscillator.type = 'sine';
+        oscillator.frequency.setValueAtTime(880, audioCtx.currentTime); // 880Hz
+        gainNode.gain.setValueAtTime(0.1, audioCtx.currentTime);
+        oscillator.connect(gainNode);
+        gainNode.connect(audioCtx.destination);
+        oscillator.start();
+        setTimeout(function(){ oscillator.stop(); }, 150);
+    } catch(e) { console.log("Audio/Vibration not supported or blocked"); }
+    </script>
+    """
+    components.html(js_code, height=0, width=0)
 
 # ==========================================
 # 🌟 GitHub サンプル画像のURL設定
@@ -95,30 +94,27 @@ COLOR_CURVE_LINE = (255, 0, 0)
 COLOR_THICKNESS = (255, 0, 255)
 
 # ==========================================
-# 2. データベース操作関数 (リトライ機能付き)
+# 2. データベース操作関数 (リトライ機能付きAPIエラー対策版)
 # ==========================================
 def load_tags():
-    sheet_name = st.session_state.config.get("sheet_tags", "Tags")
     for attempt in range(3):
         try:
-            df = conn.read(worksheet=sheet_name, ttl=600, dtype=str)
+            df = conn.read(worksheet="Tags", ttl=600, dtype=str)
             return df.fillna("")
         except Exception as e:
             if attempt < 2:
                 time.sleep(2)
             else:
-                st.error(f"⚠️ Google Sheets ({sheet_name}) のアクセス制限に達しています。しばらく待ってから再試行してください。")
+                st.error("⚠️ Google Sheetsのアクセス制限に達しています。1〜2分待ってから再度お試しください。")
                 st.stop()
 
 def load_items():
-    sheet_name = st.session_state.config.get("sheet_items", "Items")
     for attempt in range(3):
         try:
-            df = conn.read(worksheet=sheet_name, ttl=600, dtype=str)
+            df = conn.read(worksheet="Items", ttl=600, dtype=str)
             for col in ['weight', 'length', 'thickness', 'curve']:
                 if col in df.columns:
                     df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
-                    
             for col in df.columns:
                 if col not in ['weight', 'length', 'thickness', 'curve']:
                     df[col] = df[col].fillna("")
@@ -127,7 +123,7 @@ def load_items():
             if attempt < 2:
                 time.sleep(2)
             else:
-                st.error(f"⚠️ Google Sheets ({sheet_name}) のアクセス制限に達しています。しばらく待ってから再試行してください。")
+                st.error("⚠️ Google Sheetsのアクセス制限に達しています。1〜2分待ってから再度お試しください。")
                 st.stop()
 
 def get_tag_info(tag_id):
@@ -157,10 +153,8 @@ def register_new_item(tag_id):
     })
     items_df = pd.concat([items_df, new_item], ignore_index=True)
     
-    sheet_tags = st.session_state.config.get("sheet_tags", "Tags")
-    sheet_items = st.session_state.config.get("sheet_items", "Items")
-    conn.update(worksheet=sheet_tags, data=tags_df)
-    conn.update(worksheet=sheet_items, data=items_df)
+    conn.update(worksheet="Tags", data=tags_df)
+    conn.update(worksheet="Items", data=items_df)
     st.cache_data.clear()
     return item_code
 
@@ -176,8 +170,7 @@ def update_item_record(item_code, **kwargs):
             items_df[key] = items_df[key].astype(object)
             items_df.loc[idx, key] = val
             
-        sheet_items = st.session_state.config.get("sheet_items", "Items")
-        conn.update(worksheet=sheet_items, data=items_df)
+        conn.update(worksheet="Items", data=items_df)
         st.cache_data.clear()
 
 def unbind_tag(tag_id):
@@ -186,8 +179,7 @@ def unbind_tag(tag_id):
     idx = tags_df[tags_df['tag_id'] == str(tag_id)].index
     if not idx.empty:
         tags_df.loc[idx, 'current_item_code'] = ""
-        sheet_tags = st.session_state.config.get("sheet_tags", "Tags")
-        conn.update(worksheet=sheet_tags, data=tags_df)
+        conn.update(worksheet="Tags", data=tags_df)
         st.cache_data.clear()
         return True
     return False
@@ -232,7 +224,7 @@ def extract_cucumber_contour(warped_img: np.ndarray):
     kernel = np.ones((5, 5), np.uint8)
     mask = cv2.morphologyEx(cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel), cv2.MORPH_CLOSE, kernel)
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    if not contours: return None, "キュウリが検出できません。"
+    if not contours: return None, f"{c_name}が検出できません。"
     return max(contours, key=cv2.contourArea), None
 
 def calculate_length(contour):
@@ -256,7 +248,7 @@ def calculate_curve(contour):
         for i in range(defects.shape[0]):
             s, e, f, d = defects[i].flatten()
             if d > max_depth:
-                max_depth, best_defect = d, defects[i].flatten()
+                max_depth, best_defect = d
         if best_defect is not None:
             s, e, f, d = best_defect
             defect_start, defect_end = contour[s][0], contour[e][0]
@@ -339,14 +331,13 @@ def process_measurement(image):
     return res_img, html, length_cm, avg_thick_cm, curve_cm, display_grade, warped
 
 # ==========================================
-# 4. Streamlit UI 構成 (タブ切り替え)
+# 4. Streamlit UI 構成 (3つのタブ)
 # ==========================================
-tab1, tab2, tab3 = st.tabs(["🌱 生育記録", "🥒 収穫・階級判定", "⚙️ 初期設定"])
+tab1, tab2, tab3 = st.tabs(["🌱 生育記録", f"{c_emoji} 収穫・階級判定", "⚙️ 初期設定"])
 
 # --- タブ1: 生育記録 ---
 with tab1:
     st.header("🌱 生育記録 (QRスキャン)")
-    cfg = st.session_state.config
     
     img_source_qr = st.radio("入力方法", ["カメラ", "アップロード", "サンプル画像 (sample1)"], key="qr_radio")
     
@@ -358,7 +349,7 @@ with tab1:
         qr_img = st.file_uploader("QRコード画像を選択", type=["jpg", "jpeg", "png"], key="qr_upload")
         if qr_img: file_bytes_qr = np.asarray(bytearray(qr_img.read()), dtype=np.uint8)
     else:
-        st.info("GitHub上のサンプル画像 (sample1.png) を使用します。")
+        st.info("サンプル画像 (sample1.png) を使用します。")
         raw_data = get_image_bytes_from_url(SAMPLE1_URL)
         if raw_data: file_bytes_qr = np.asarray(bytearray(raw_data), dtype=np.uint8)
 
@@ -370,11 +361,11 @@ with tab1:
         tag_id = read_qr_from_bytes(file_bytes_qr)
         
         if tag_id:
-            # 🔔 新しいスキャン検出時に音と振動でフィードバック
-            if tag_id not in st.session_state.processed_qrs:
-                trigger_notification()
-                st.session_state.processed_qrs.add(tag_id)
-
+            # 音・振動を鳴らす (新規スキャン時のみ)
+            if st.session_state.last_scanned_tag != tag_id:
+                play_notification_sound()
+                st.session_state.last_scanned_tag = tag_id
+                
             st.success(f"🏷️ タグを認識しました: {tag_id}")
             item_code = get_tag_info(tag_id)
             if not item_code:
@@ -387,7 +378,7 @@ with tab1:
             
             def clean_date_str(val):
                 s = str(val).strip()
-                return "" if s in ["nan", "None", ""] else s
+                return "" if s == "nan" or s == "None" else s
 
             s_date_str = clean_date_str(item_data.get('sprout_date', ''))
             b_date_str = clean_date_str(item_data.get('bloom_date', ''))
@@ -396,19 +387,23 @@ with tab1:
             today_date = datetime.date.today()
             today_str = today_date.strftime("%Y-%m-%d")
             
-            # 自動日付入力（未入力項目に今日の日付を追加）
-            if today_str not in [s_date_str, b_date_str, h_date_str]:
-                updated = False
-                if not s_date_str:
-                    s_date_str, updated = today_str, True
-                elif not b_date_str:
-                    b_date_str, updated = today_str, True
-                elif not h_date_str:
-                    h_date_str, updated = today_str, True
-                
-                if updated:
-                    update_item_record(item_code, sprout_date=s_date_str, bloom_date=b_date_str, harvest_date=h_date_str)
-                    st.success("🌱 スキャンを検知し、自動で日付を記録しました！")
+            # 初回スキャン時のみ自動更新を実行
+            if tag_id not in st.session_state.processed_qrs:
+                if today_str in [s_date_str, b_date_str, h_date_str]:
+                    st.info("✅ 本日読み込み済みです。")
+                else:
+                    updated = False
+                    if not s_date_str:
+                        s_date_str, updated = today_str, True
+                    elif not b_date_str:
+                        b_date_str, updated = today_str, True
+                    elif not h_date_str:
+                        h_date_str, updated = today_str, True
+                    
+                    if updated:
+                        update_item_record(item_code, sprout_date=s_date_str, bloom_date=b_date_str, harvest_date=h_date_str)
+                        st.success("🌱 スキャンを検知し、自動でデータベースを更新しました！")
+                st.session_state.processed_qrs.add(tag_id)
 
             def parse_date(d_str):
                 if d_str:
@@ -417,59 +412,67 @@ with tab1:
                     except:
                         pass
                 return None
-                
-            s_date_val = parse_date(s_date_str)
-            b_date_val = parse_date(b_date_str)
-            h_date_val = parse_date(h_date_str)
+            
+            # セッションステートに現在の日付状態をセット（初回のみ）
+            if f"d1_{item_code}" not in st.session_state:
+                st.session_state[f"d1_{item_code}"] = parse_date(s_date_str)
+                st.session_state[f"d2_{item_code}"] = parse_date(b_date_str)
+                st.session_state[f"d3_{item_code}"] = parse_date(h_date_str)
             
             st.write(f"📝 編集対象コード: `{item_code}`")
             
-            area_opts = cfg.get("area_options", [str(i) for i in range(1, 13)])
+            area_opts = [str(i) for i in range(1, 13)]
             current_area = clean_date_str(item_data.get('area_number', "1"))
-            if current_area not in area_opts and len(area_opts) > 0:
-                current_area = area_opts[0]
+            if current_area not in area_opts: current_area = "1"
             
-            # 🌟 フォーム内に入力＆「日付消去チェック」を追加して復元
-            with st.form(key=f"form_{item_code}"):
-                new_area = st.selectbox(cfg.get("label_area", "試験エリア番号"), area_opts, index=area_opts.index(current_area) if current_area in area_opts else 0)
+            # 🌟 フォームを外し、個別にクリアボタンを配置
+            new_area = st.selectbox("試験エリア番号", area_opts, index=area_opts.index(current_area))
+            
+            lbl1 = st.session_state.settings["date1_label"]
+            lbl2 = st.session_state.settings["date2_label"]
+            lbl3 = st.session_state.settings["date3_label"]
+
+            col_a, col_b, col_c = st.columns(3)
+            with col_a:
+                st.session_state[f"d1_{item_code}"] = st.date_input(lbl1, value=st.session_state[f"d1_{item_code}"])
+                if st.button(f"🗑️ {lbl1}を消去", key=f"clear_d1_{item_code}"):
+                    st.session_state[f"d1_{item_code}"] = None
+                    st.rerun()
+            with col_b:
+                st.session_state[f"d2_{item_code}"] = st.date_input(lbl2, value=st.session_state[f"d2_{item_code}"])
+                if st.button(f"🗑️ {lbl2}を消去", key=f"clear_d2_{item_code}"):
+                    st.session_state[f"d2_{item_code}"] = None
+                    st.rerun()
+            with col_c:
+                st.session_state[f"d3_{item_code}"] = st.date_input(lbl3, value=st.session_state[f"d3_{item_code}"])
+                if st.button(f"🗑️ {lbl3}を消去", key=f"clear_d3_{item_code}"):
+                    st.session_state[f"d3_{item_code}"] = None
+                    st.rerun()
+            
+            new_comment = st.text_area("コメント（自由入力）", value=clean_date_str(item_data.get('comment', '')))
+            
+            st.markdown("<br>", unsafe_allow_html=True)
+            if st.button("💾 記録をまとめて更新する", type="primary", use_container_width=True):
+                s_str = st.session_state[f"d1_{item_code}"].strftime("%Y-%m-%d") if st.session_state[f"d1_{item_code}"] else ""
+                b_str = st.session_state[f"d2_{item_code}"].strftime("%Y-%m-%d") if st.session_state[f"d2_{item_code}"] else ""
+                h_str = st.session_state[f"d3_{item_code}"].strftime("%Y-%m-%d") if st.session_state[f"d3_{item_code}"] else ""
                 
-                col_a, col_b, col_c = st.columns(3)
-                with col_a:
-                    new_s_date = st.date_input(cfg.get("label_sprout", "発芽日"), value=s_date_val)
-                    clear_s = st.checkbox("🗑️ 発芽日を消去", value=False)
-                with col_b:
-                    new_b_date = st.date_input(cfg.get("label_bloom", "開花日"), value=b_date_val)
-                    clear_b = st.checkbox("🗑️ 開花日を消去", value=False)
-                with col_c:
-                    new_h_date = st.date_input(cfg.get("label_harvest", "収穫日"), value=h_date_val)
-                    clear_h = st.checkbox("🗑️ 収穫日を消去", value=False)
-                
-                new_comment = st.text_area(cfg.get("label_comment", "コメント"), value=clean_date_str(item_data.get('comment', '')))
-                
-                submit_btn = st.form_submit_button("💾 記録をまとめて更新する", type="primary")
-                
-                if submit_btn:
-                    # 消去チェックが入っている場合は空文字にする
-                    s_str = "" if clear_s else (new_s_date.strftime("%Y-%m-%d") if new_s_date else "")
-                    b_str = "" if clear_b else (new_b_date.strftime("%Y-%m-%d") if new_b_date else "")
-                    h_str = "" if clear_h else (new_h_date.strftime("%Y-%m-%d") if new_h_date else "")
-                    
-                    update_item_record(
-                        item_code, 
-                        area_number=str(new_area), 
-                        sprout_date=s_str, 
-                        bloom_date=b_str, 
-                        harvest_date=h_str, 
-                        comment=str(new_comment)
-                    )
-                    st.success(f"✅ アイテム【{item_code}】の記録を更新しました！")
+                update_item_record(
+                    item_code, 
+                    area_number=str(new_area), 
+                    sprout_date=s_str, 
+                    bloom_date=b_str, 
+                    harvest_date=h_str, 
+                    comment=str(new_comment)
+                )
+                st.success(f"✅ アイテム【{item_code}】の記録を更新しました！")
                 
         else:
             st.error("QRコードを検出できませんでした。別の画像を選択するか、再撮影してください。")
 
 # --- タブ2: 収穫・階級判定 ---
 with tab2:
-    st.header("🥒 収穫・階級判定")
+    st.header(f"{c_emoji} 収穫・階級判定 ({c_name})")
     
     col1, col2 = st.columns(2)
     with col1:
@@ -477,13 +480,13 @@ with tab2:
         
         file_bytes_grade = None
         if img_source_grade == "カメラ":
-            c_img = st.camera_input("キュウリを撮影（A4マーカー枠＆QRコード必須）", key="grade_camera", on_change=clear_grade_result)
+            c_img = st.camera_input(f"{c_name}を撮影（A4マーカー枠＆QRコード必須）", key="grade_camera", on_change=clear_grade_result)
             if c_img: file_bytes_grade = np.asarray(bytearray(c_img.read()), dtype=np.uint8)
         elif img_source_grade == "アップロード":
             c_img = st.file_uploader("画像を選択", type=["jpg", "jpeg", "png"], key="grade_upload", on_change=clear_grade_result)
             if c_img: file_bytes_grade = np.asarray(bytearray(c_img.read()), dtype=np.uint8)
         else:
-            st.info("GitHub上のサンプル画像 (sample2.jpg) を使用します。")
+            st.info("サンプル画像 (sample2.jpg) を使用します。")
             raw_data = get_image_bytes_from_url(SAMPLE2_URL)
             if raw_data: file_bytes_grade = np.asarray(bytearray(raw_data), dtype=np.uint8)
 
@@ -508,10 +511,6 @@ with tab2:
                     warped_bgr = cv2.cvtColor(warped, cv2.COLOR_RGB2BGR)
                     data, _, _ = detector.detectAndDecode(warped_bgr)
                     tag_id = str(data).strip() if data else None
-
-            # 🔔 タグ認識時に通知音
-            if tag_id:
-                trigger_notification()
             
             st.session_state.grade_result = {
                 'res_img': res_img,
@@ -533,6 +532,11 @@ with tab2:
             
             if res['l_cm'] is not None:
                 if res['tag_id']:
+                    # 音・振動 (判定時のタグ検出)
+                    if st.session_state.last_scanned_tag != res['tag_id']:
+                        play_notification_sound()
+                        st.session_state.last_scanned_tag = res['tag_id']
+                        
                     st.success(f"✅ タグ【{res['tag_id']}】を検出しました。重さを入力して登録を完了させてください。")
                     
                     with st.form("register_grade_form"):
@@ -541,68 +545,48 @@ with tab2:
                         
                         if submit_btn:
                             item_code = get_tag_info(res['tag_id'])
-                            if item_code:
-                                update_item_record(item_code, length=float(res['l_cm']), thickness=float(res['t_cm']), curve=float(res['c_cm']), grade=str(res['grade_str']), weight=float(harvest_weight))
-                                st.success(f"🎉 アイテム【{item_code}】の階級（{res['grade_str']}）と 重さ（{harvest_weight}g）を登録しました！")
-                            else:
-                                item_code = register_new_item(res['tag_id'])
-                                update_item_record(item_code, length=float(res['l_cm']), thickness=float(res['t_cm']), curve=float(res['c_cm']), grade=str(res['grade_str']), weight=float(harvest_weight))
-                                st.success(f"🎉 新規タグとして 階級（{res['grade_str']}）と 重さ（{harvest_weight}g）を登録しました！")
+                            if not item_code: item_code = register_new_item(res['tag_id'])
+                            update_item_record(item_code, length=float(res['l_cm']), thickness=float(res['t_cm']), curve=float(res['c_cm']), grade=str(res['grade_str']), weight=float(harvest_weight))
+                            st.success(f"🎉 アイテム【{item_code}】の情報を登録しました！")
                 else:
                     st.error("⚠️ 画像からQRコードを検出できませんでした。計測は完了しましたが、データベースには登録できません。")
 
     st.divider()
     with st.expander("🔗 QRコードの使いまわし（タグのリンク解除）"):
-        st.write("QRコードを再利用して新しいキュウリに使用する場合、現在のアイテムとの紐づけを解除します。")
-        unbind_target_tag = st.text_input("リンク解除するQRタグ番号 (例: 413562)", key="unbind_tag_input")
+        st.write(f"QRコードを再利用して新しい{c_name}に使用する場合、現在のアイテムとの紐づけを解除します。")
+        unbind_target_tag = st.text_input("リンク解除するQRタグ番号", key="unbind_tag_input")
         if st.button("🔓 リンク解除を実行", type="secondary"):
             if unbind_target_tag:
                 if unbind_tag(unbind_target_tag):
-                    st.success(f"タグ【{unbind_target_tag}】のリンクを解除しました！次回のQRスキャンで新しいアイテムコードが割り当てられます。")
+                    st.success(f"タグ【{unbind_target_tag}】のリンクを解除しました！")
                 else:
-                    st.warning(f"タグ【{unbind_target_tag}】が見つからないか、すでに解除されています。")
+                    st.warning(f"タグが見つからないか、すでに解除されています。")
             else:
                 st.error("タグ番号を入力してください。")
 
-# --- タブ3: 初期設定 ---
+# --- タブ3: 初期設定 (カスタマイズ) ---
 with tab3:
-    st.header("⚙️ 初期設定")
-    st.write("システムの表示名称や、スプレッドシートの各設定を変更できます。")
+    st.header("⚙️ システム初期設定")
+    st.write("他の作物に合わせて、アプリ内の表示名称やアイコンを変更できます。")
+    st.info("※ここで変更した内容はスプレッドシートの内部の列名（システム上の名前）には影響せず、アプリ上の表示（ラベル）のみが切り替わります。")
     
-    with st.form("config_form"):
-        st.subheader("1. 画面上の表示名称（ラベル）")
-        col1, col2 = st.columns(2)
-        with col1:
-            lbl_sprout = st.text_input("発芽日の項目名", value=st.session_state.config.get("label_sprout", "発芽日"))
-            lbl_bloom = st.text_input("開花日の項目名", value=st.session_state.config.get("label_bloom", "開花日"))
-            lbl_harvest = st.text_input("収穫日の項目名", value=st.session_state.config.get("label_harvest", "収穫日"))
-        with col2:
-            lbl_area = st.text_input("エリア番号の項目名", value=st.session_state.config.get("label_area", "試験エリア番号"))
-            lbl_comment = st.text_input("コメントの項目名", value=st.session_state.config.get("label_comment", "コメント（自由入力）"))
+    with st.form("settings_form"):
+        new_crop = st.text_input("作物名", value=st.session_state.settings["crop_name"])
+        new_emoji = st.text_input("絵文字アイコン", value=st.session_state.settings["emoji"])
+        st.divider()
+        st.write("📅 生育記録の項目名設定")
+        new_d1 = st.text_input("日付項目 1 (内部: sprout_date)", value=st.session_state.settings["date1_label"])
+        new_d2 = st.text_input("日付項目 2 (内部: bloom_date)", value=st.session_state.settings["date2_label"])
+        new_d3 = st.text_input("日付項目 3 (内部: harvest_date)", value=st.session_state.settings["date3_label"])
         
-        st.subheader("2. 試験エリア番号の選択肢")
-        current_areas_str = ", ".join(st.session_state.config.get("area_options", [str(i) for i in range(1, 13)]))
-        new_areas_str = st.text_area("選択肢一覧（カンマ区切りで入力してください）", value=current_areas_str, help="例: 1, 2, 3, 4, A区, B区")
+        save_settings = st.form_submit_button("💾 設定を保存して適用", type="primary")
         
-        st.subheader("3. Google スプレッドシートのシート名")
-        col_s1, col_s2 = st.columns(2)
-        with col_s1:
-            sh_tags = st.text_input("タグ管理シート名", value=st.session_state.config.get("sheet_tags", "Tags"))
-        with col_s2:
-            sh_items = st.text_input("アイテム詳細シート名", value=st.session_state.config.get("sheet_items", "Items"))
-            
-        save_cfg_btn = st.form_submit_button("⚙️ 設定を保存する", type="primary")
-        
-        if save_cfg_btn:
-            parsed_areas = [a.strip() for a in new_areas_str.split(",") if a.strip() != ""]
-            
-            st.session_state.config["label_sprout"] = lbl_sprout
-            st.session_state.config["label_bloom"] = lbl_bloom
-            st.session_state.config["label_harvest"] = lbl_harvest
-            st.session_state.config["label_area"] = lbl_area
-            st.session_state.config["label_comment"] = lbl_comment
-            st.session_state.config["area_options"] = parsed_areas if parsed_areas else [str(i) for i in range(1, 13)]
-            st.session_state.config["sheet_tags"] = sh_tags
-            st.session_state.config["sheet_items"] = sh_items
-            
-            st.success("✅ 設定を保存しました！各タブに反映されます。")
+        if save_settings:
+            st.session_state.settings["crop_name"] = new_crop
+            st.session_state.settings["emoji"] = new_emoji
+            st.session_state.settings["date1_label"] = new_d1
+            st.session_state.settings["date2_label"] = new_d2
+            st.session_state.settings["date3_label"] = new_d3
+            st.success("✅ 設定を保存しました。画面が更新されます。")
+            time.sleep(1)
+            st.rerun()
