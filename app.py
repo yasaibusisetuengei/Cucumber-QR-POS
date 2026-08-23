@@ -248,7 +248,7 @@ def calculate_curve(contour):
         for i in range(defects.shape[0]):
             s, e, f, d = defects[i].flatten()
             if d > max_depth:
-                max_depth, best_defect = d
+                max_depth, best_defect = d, defects[i].flatten()
         if best_defect is not None:
             s, e, f, d = best_defect
             defect_start, defect_end = contour[s][0], contour[e][0]
@@ -361,7 +361,6 @@ with tab1:
         tag_id = read_qr_from_bytes(file_bytes_qr)
         
         if tag_id:
-            # 音・振動を鳴らす (新規スキャン時のみ)
             if st.session_state.last_scanned_tag != tag_id:
                 play_notification_sound()
                 st.session_state.last_scanned_tag = tag_id
@@ -387,7 +386,6 @@ with tab1:
             today_date = datetime.date.today()
             today_str = today_date.strftime("%Y-%m-%d")
             
-            # 初回スキャン時のみ自動更新を実行
             if tag_id not in st.session_state.processed_qrs:
                 if today_str in [s_date_str, b_date_str, h_date_str]:
                     st.info("✅ 本日読み込み済みです。")
@@ -413,7 +411,6 @@ with tab1:
                         pass
                 return None
             
-            # セッションステートに現在の日付状態をセット（初回のみ）
             if f"d1_{item_code}" not in st.session_state:
                 st.session_state[f"d1_{item_code}"] = parse_date(s_date_str)
                 st.session_state[f"d2_{item_code}"] = parse_date(b_date_str)
@@ -425,7 +422,6 @@ with tab1:
             current_area = clean_date_str(item_data.get('area_number', "1"))
             if current_area not in area_opts: current_area = "1"
             
-            # 🌟 フォームを外し、個別にクリアボタンを配置
             new_area = st.selectbox("試験エリア番号", area_opts, index=area_opts.index(current_area))
             
             lbl1 = st.session_state.settings["date1_label"]
@@ -532,7 +528,6 @@ with tab2:
             
             if res['l_cm'] is not None:
                 if res['tag_id']:
-                    # 音・振動 (判定時のタグ検出)
                     if st.session_state.last_scanned_tag != res['tag_id']:
                         play_notification_sound()
                         st.session_state.last_scanned_tag = res['tag_id']
