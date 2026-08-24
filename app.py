@@ -370,9 +370,10 @@ with tab1:
     if img_source_qr == "カメラ":
         qr_img = st.camera_input("QRコードを撮影", key="qr_camera")
         if qr_img:
-            # ★条件②: ダウンロード画像とDB記録名を一致させるためのIDとファイル名管理
-            if "record_img_id" not in st.session_state or st.session_state.record_img_id != qr_img.id:
-                st.session_state.record_img_id = qr_img.id
+            # 修正:UploadedFileには.idが無いためハッシュ値を利用
+            img_key = hash(qr_img.getvalue())
+            if "record_img_id" not in st.session_state or st.session_state.record_img_id != img_key:
+                st.session_state.record_img_id = img_key
                 st.session_state.record_img_filename = f"scan_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg"
                 st.session_state.temp_record_bytes = qr_img.getvalue()
 
@@ -406,7 +407,6 @@ with tab1:
         
         if tag_id:
             if st.session_state.last_scanned_tag != tag_id:
-                # スマホ撮影時も含めて通知音を鳴らす
                 play_notification_sound()
                 st.session_state.last_scanned_tag = tag_id
                 
@@ -510,9 +510,10 @@ with tab2:
         if img_source_grade == "カメラ":
             c_img = st.camera_input(f"{c_name}を撮影（A4マーカー枠＆QRコード必須）", key="grade_camera", on_change=clear_grade_result)
             if c_img:
-                # ★条件②: ダウンロード画像とDB記録名を一致させるためのIDとファイル名管理
-                if "grade_img_id" not in st.session_state or st.session_state.grade_img_id != c_img.id:
-                    st.session_state.grade_img_id = c_img.id
+                # 修正:UploadedFileには.idが無いためハッシュ値を利用
+                img_key = hash(c_img.getvalue())
+                if "grade_img_id" not in st.session_state or st.session_state.grade_img_id != img_key:
+                    st.session_state.grade_img_id = img_key
                     st.session_state.grade_img_filename = f"grade_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg"
                     st.session_state.temp_grade_bytes = c_img.getvalue()
 
@@ -571,7 +572,6 @@ with tab2:
             if res['l_cm'] is not None:
                 if res['tag_id']:
                     if st.session_state.last_scanned_tag != res['tag_id']:
-                        # スマホ撮影時も含めて通知音を鳴らす
                         play_notification_sound()
                         st.session_state.last_scanned_tag = res['tag_id']
                         
@@ -584,7 +584,6 @@ with tab2:
                             item_code = get_tag_info(res['tag_id'])
                             if not item_code: item_code = register_new_item(res['tag_id'])
                             
-                            # ★条件②: ダウンロード画像のファイル名をDBに記録する
                             update_kwargs = {
                                 'length': float(res['l_cm']), 'thickness': float(res['t_cm']),
                                 'curve': float(res['c_cm']), 'grade': str(res['grade_str']),
@@ -696,8 +695,8 @@ with tab3:
                             continue
                     return ImageFont.load_default()
                 
-                # ★条件①: 裏面印刷用巨大フォント設定
-                font_size = int(qr_size_px * 0.4)
+                # 修正:裏面印刷用フォントを従来の3倍に拡大 (0.4 -> 1.2)
+                font_size = int(qr_size_px * 1.2)
                 font = get_large_font(font_size)
                 
                 x_idx, y_idx = 0, 0
@@ -711,7 +710,6 @@ with tab3:
                     )
                     qr.add_data(tag_str)
                     qr.make(fit=True)
-                    # 文字は描画せず、純粋なQRコードにする
                     qr_img = qr.make_image(fill_color="black", back_color="white").convert("RGB")
                     qr_img = qr_img.resize((qr_size_px, qr_size_px))
                     
@@ -752,7 +750,7 @@ with tab3:
                             draw_back.rectangle([bx - int(5 * mm_to_px), by - top_padding, bx + qr_size_px + int(5 * mm_to_px), by + qr_size_px + bottom_padding], outline="gray")
                             draw_back.ellipse([bx + qr_size_px//2 - 10, by - top_padding + 10, bx + qr_size_px//2 + 10, by - top_padding + 30], outline="black")
                             
-                            # 裏面にタグ番号の巨大文字を描画
+                            # 裏面にタグ番号の巨大文字を描画（3倍に拡大したフォントを適用）
                             try:
                                 text_bbox = draw_back.textbbox((0, 0), item['tag_str'], font=font)
                                 text_w = text_bbox[2] - text_bbox[0]
@@ -772,7 +770,6 @@ with tab3:
                         x_idx, y_idx = 0, 0
                 
                 pdf_bytes = BytesIO()
-                # 表面と裏面を交互にPDFとして保存
                 pages[0].save(pdf_bytes, format="PDF", save_all=True, append_images=pages[1:])
                 
                 st.download_button(
