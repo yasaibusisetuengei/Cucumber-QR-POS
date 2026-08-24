@@ -553,7 +553,7 @@ with tab2:
                 cam_tag_g = read_qr_from_bytes(file_bytes_grade)
                 cam_item_code_g = get_tag_info(cam_tag_g) if cam_tag_g else None
                 
-                # 💾 ダウンロードボタン押下時にスプレッドシートへ同期
+                # 💾 ダウンロードボタン押下時にスプレッドシートへ同期 (grade_image)
                 st.download_button(
                     label="💾 撮影画像をスマホに保存",
                     data=st.session_state.temp_grade_bytes,
@@ -595,6 +595,11 @@ with tab2:
                     warped_bgr = cv2.cvtColor(warped, cv2.RGB2BGR)
                     data, _, _ = detector.detectAndDecode(warped_bgr)
                     tag_id = str(data).strip() if data else None
+            
+            # 計測時点で即座にスプレッドシートの grade_image を更新（補元処理）
+            if tag_id and st.session_state.get('grade_img_filename'):
+                item_code_tmp = get_tag_info(tag_id) or register_new_item(tag_id)
+                update_item_record(item_code_tmp, grade_image=st.session_state.grade_img_filename)
             
             st.session_state.grade_result = {
                 'res_img': res_img, 'html': html, 'l_cm': l_cm, 't_cm': t_cm,
@@ -739,8 +744,8 @@ with tab3:
                             continue
                     return None
                 
-                # 🛠️ 修正: 裏面文字フォントサイズを「QRコードの40%」（前回の半分）に変更
-                font_size = int(qr_size_px * 0.4)
+                # 🛠️ 修正: 裏面文字フォントサイズを「QRコードの20%」（前回のさらに半分）に変更
+                font_size = int(qr_size_px * 0.2)
                 font = get_large_font(font_size)
                 default_font = ImageFont.load_default()
                 
@@ -783,10 +788,10 @@ with tab3:
                             bx_idx = cols - 1 - item['x_idx']
                             bx = margin_px + bx_idx * tag_w_px + int(5 * mm_to_px)
                             by = margin_px + item['y_idx'] * tag_h_px + top_padding
-                            draw_back.rectangle([bx - int(5 * mm_to_px), by - top_padding, bx + qr_size_px + int(5 * mm_to_px), by + qr_size_px + bottom_padding], outline="gray")
+                            draw_back.rectangle([bx - int(5 * mm_to_px), by - top_padding, bx + qr_size_px + int(5 * mm_to_px), bx + qr_size_px + bottom_padding], outline="gray")
                             draw_back.ellipse([bx + qr_size_px//2 - 10, by - top_padding + 10, bx + qr_size_px//2 + 10, by - top_padding + 30], outline="black")
                             
-                            # 🛠️ 修正: 綺麗な滑らかさで文字を描画（フォールバック時もスムーズに拡大）
+                            # 🛠️ 修正: 裏面中央に縮小した文字を描画
                             if font:
                                 try:
                                     text_bbox = draw_back.textbbox((0, 0), item['tag_str'], font=font)
