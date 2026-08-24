@@ -370,23 +370,32 @@ with tab1:
     if img_source_qr == "カメラ":
         qr_img = st.camera_input("QRコードを撮影", key="qr_camera")
         if qr_img:
-            st.session_state.temp_record_bytes = qr_img.getvalue()
+            # ★条件②: ダウンロード画像とDB記録名を一致させるためのIDとファイル名管理
+            if "record_img_id" not in st.session_state or st.session_state.record_img_id != qr_img.id:
+                st.session_state.record_img_id = qr_img.id
+                st.session_state.record_img_filename = f"scan_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg"
+                st.session_state.temp_record_bytes = qr_img.getvalue()
+
             file_bytes_qr = np.asarray(bytearray(st.session_state.temp_record_bytes), dtype=np.uint8)
-            # ★条件③: 撮影した画像を端末（スマホ）に保存するボタンを表示
+            
             st.download_button(
                 label="💾 撮影画像をスマホに保存",
                 data=st.session_state.temp_record_bytes,
-                file_name=f"scan_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg",
+                file_name=st.session_state.record_img_filename,
                 mime="image/jpeg",
                 key="dl_cam_qr"
             )
     elif img_source_qr == "アップロード":
         qr_img = st.file_uploader("QRコード画像を選択", type=["jpg", "jpeg", "png"], key="qr_upload")
-        if qr_img: file_bytes_qr = np.asarray(bytearray(qr_img.read()), dtype=np.uint8)
+        if qr_img: 
+            file_bytes_qr = np.asarray(bytearray(qr_img.read()), dtype=np.uint8)
+            st.session_state.record_img_filename = qr_img.name
     else:
         st.info("サンプル画像 (sample1.png) を使用します。")
         raw_data = get_image_bytes_from_url(SAMPLE1_URL)
-        if raw_data: file_bytes_qr = np.asarray(bytearray(raw_data), dtype=np.uint8)
+        if raw_data: 
+            file_bytes_qr = np.asarray(bytearray(raw_data), dtype=np.uint8)
+            st.session_state.record_img_filename = "sample1.png"
 
     if file_bytes_qr is not None:
         if img_source_qr in ["アップロード", "サンプル画像 (sample1)"]:
@@ -397,7 +406,7 @@ with tab1:
         
         if tag_id:
             if st.session_state.last_scanned_tag != tag_id:
-                # ★条件②: スマホ撮影時も含めて通知音を鳴らす
+                # スマホ撮影時も含めて通知音を鳴らす
                 play_notification_sound()
                 st.session_state.last_scanned_tag = tag_id
                 
@@ -443,6 +452,7 @@ with tab1:
                             break
                     
                     if updated:
+                        update_kwargs['record_image'] = st.session_state.get('record_img_filename', '')
                         update_item_record(item_code, **update_kwargs)
                         st.success("🌱 スキャンを検知し、自動でデータベースを更新しました！")
                         match = load_items().query(f"item_code == '{item_code}'")
@@ -478,6 +488,8 @@ with tab1:
             
             if st.button("💾 記録をまとめて更新する", type="primary", use_container_width=True):
                 update_kwargs = {'area_number': str(new_area), 'comment': str(new_comment)}
+                update_kwargs['record_image'] = st.session_state.get('record_img_filename', '')
+                
                 for i in range(date_count):
                     val = st.session_state[f"d{i+1}_{item_code}"]
                     update_kwargs[f"date_{i+1}"] = val.strftime("%Y-%m-%d") if val else ""
@@ -498,23 +510,32 @@ with tab2:
         if img_source_grade == "カメラ":
             c_img = st.camera_input(f"{c_name}を撮影（A4マーカー枠＆QRコード必須）", key="grade_camera", on_change=clear_grade_result)
             if c_img:
-                st.session_state.temp_grade_bytes = c_img.getvalue()
+                # ★条件②: ダウンロード画像とDB記録名を一致させるためのIDとファイル名管理
+                if "grade_img_id" not in st.session_state or st.session_state.grade_img_id != c_img.id:
+                    st.session_state.grade_img_id = c_img.id
+                    st.session_state.grade_img_filename = f"grade_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg"
+                    st.session_state.temp_grade_bytes = c_img.getvalue()
+
                 file_bytes_grade = np.asarray(bytearray(st.session_state.temp_grade_bytes), dtype=np.uint8)
-                # ★条件③: 撮影した画像を端末（スマホ）に保存するボタンを表示
+                
                 st.download_button(
                     label="💾 撮影画像をスマホに保存",
                     data=st.session_state.temp_grade_bytes,
-                    file_name=f"grade_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg",
+                    file_name=st.session_state.grade_img_filename,
                     mime="image/jpeg",
                     key="dl_cam_grade"
                 )
         elif img_source_grade == "アップロード":
             c_img = st.file_uploader("画像を選択", type=["jpg", "jpeg", "png"], key="grade_upload", on_change=clear_grade_result)
-            if c_img: file_bytes_grade = np.asarray(bytearray(c_img.read()), dtype=np.uint8)
+            if c_img: 
+                file_bytes_grade = np.asarray(bytearray(c_img.read()), dtype=np.uint8)
+                st.session_state.grade_img_filename = c_img.name
         else:
             st.info("サンプル画像 (sample2.jpg) を使用します。")
             raw_data = get_image_bytes_from_url(SAMPLE2_URL)
-            if raw_data: file_bytes_grade = np.asarray(bytearray(raw_data), dtype=np.uint8)
+            if raw_data: 
+                file_bytes_grade = np.asarray(bytearray(raw_data), dtype=np.uint8)
+                st.session_state.grade_img_filename = "sample2.jpg"
 
         if file_bytes_grade is not None and img_source_grade in ["アップロード", "サンプル画像 (sample2)"]:
             cv_img_grade_preview = cv2.imdecode(file_bytes_grade, 1)
@@ -550,7 +571,7 @@ with tab2:
             if res['l_cm'] is not None:
                 if res['tag_id']:
                     if st.session_state.last_scanned_tag != res['tag_id']:
-                        # ★条件②: スマホ撮影時も含めて通知音を鳴らす
+                        # スマホ撮影時も含めて通知音を鳴らす
                         play_notification_sound()
                         st.session_state.last_scanned_tag = res['tag_id']
                         
@@ -563,10 +584,12 @@ with tab2:
                             item_code = get_tag_info(res['tag_id'])
                             if not item_code: item_code = register_new_item(res['tag_id'])
                             
+                            # ★条件②: ダウンロード画像のファイル名をDBに記録する
                             update_kwargs = {
                                 'length': float(res['l_cm']), 'thickness': float(res['t_cm']),
                                 'curve': float(res['c_cm']), 'grade': str(res['grade_str']),
-                                'weight': float(harvest_weight)
+                                'weight': float(harvest_weight),
+                                'grade_image': st.session_state.get('grade_img_filename', '')
                             }
                             
                             update_item_record(item_code, **update_kwargs)
@@ -627,8 +650,9 @@ with tab3:
             st.rerun()
 
     st.divider()
-    st.subheader("🖨️ 印刷用QRコードシート作成 (A4 PDF)")
-    st.write("指定した番号とサイズのQRコードをA4サイズに敷き詰めたPDFを作成します。")
+    st.subheader("🖨️ 印刷用QRコードシート作成 (A4 PDF・両面印刷対応)")
+    st.write("指定した番号のQRコードをA4サイズに敷き詰めたPDFを作成します。")
+    st.write("※ 長辺とじ（左右反転）で両面印刷することを想定し、裏面ページにタグ番号が印字されます。")
     
     col_q1, col_q2, col_q3 = st.columns(3)
     with col_q1:
@@ -660,8 +684,7 @@ with tab3:
                 st.error("指定されたQRコードサイズが大きすぎてA4に配置できません。サイズを小さくしてください。")
             else:
                 pages = []
-                current_page = Image.new("RGB", (a4_w_px, a4_h_px), "white")
-                draw_page = ImageDraw.Draw(current_page)
+                page_data = []
                 
                 # フォント読み込み処理（太字対応）
                 def get_large_font(size_px):
@@ -673,8 +696,8 @@ with tab3:
                             continue
                     return ImageFont.load_default()
                 
-                # ★条件①: QRコードの38%に相当する巨大フォントを生成
-                font_size = int(qr_size_px * 0.38)
+                # ★条件①: 裏面印刷用巨大フォント設定
+                font_size = int(qr_size_px * 0.4)
                 font = get_large_font(font_size)
                 
                 x_idx, y_idx = 0, 0
@@ -682,63 +705,79 @@ with tab3:
                     tag_str = str(i)
                     qr = qrcode.QRCode(
                         version=1,
-                        error_correction=qrcode.constants.ERROR_CORRECT_H,  # 誤り訂正最高レベル (30%復元)
+                        error_correction=qrcode.constants.ERROR_CORRECT_H, 
                         box_size=10,
                         border=4,
                     )
                     qr.add_data(tag_str)
                     qr.make(fit=True)
+                    # 文字は描画せず、純粋なQRコードにする
                     qr_img = qr.make_image(fill_color="black", back_color="white").convert("RGB")
                     qr_img = qr_img.resize((qr_size_px, qr_size_px))
                     
-                    # --- QRコード中央への巨大文字描画 ---
-                    draw_qr = ImageDraw.Draw(qr_img)
-                    try:
-                        text_bbox = draw_qr.textbbox((0, 0), tag_str, font=font)
-                        text_w = text_bbox[2] - text_bbox[0]
-                        text_h = text_bbox[3] - text_bbox[1]
-                    except AttributeError:
-                        text_w, text_h = draw_qr.textsize(tag_str, font=font)
-                    
-                    text_x = (qr_size_px - text_w) // 2
-                    text_y = (qr_size_px - text_h) // 2
-                    
-                    # 読取精度を保つため文字周辺に白い太枠を設けて背景描画
-                    padding = int(qr_size_px * 0.04)
-                    draw_qr.rectangle(
-                        [text_x - padding, text_y - padding, text_x + text_w + padding, text_y + text_h + padding],
-                        fill="white",
-                        outline="white"
-                    )
-                    draw_qr.text((text_x, text_y), tag_str, fill="black", font=font)
-                    
-                    # --- ページ配置・タグ枠印字 ---
-                    x = margin_px + x_idx * tag_w_px + int(5 * mm_to_px)
-                    y = margin_px + y_idx * tag_h_px + top_padding
-                    current_page.paste(qr_img, (x, y))
-                    
-                    # 外枠・パンチ穴描画
-                    draw_page.rectangle([x - int(5 * mm_to_px), y - top_padding, x + qr_size_px + int(5 * mm_to_px), y + qr_size_px + bottom_padding], outline="gray")
-                    draw_page.ellipse([x + qr_size_px//2 - 10, y - top_padding + 10, x + qr_size_px//2 + 10, y - top_padding + 30], outline="black")
+                    page_data.append({'x_idx': x_idx, 'y_idx': y_idx, 'tag_str': tag_str, 'qr_img': qr_img})
                     
                     x_idx += 1
                     if x_idx >= cols:
                         x_idx = 0
                         y_idx += 1
-                        if y_idx >= rows:
-                            pages.append(current_page)
-                            current_page = Image.new("RGB", (a4_w_px, a4_h_px), "white")
-                            draw_page = ImageDraw.Draw(current_page)
-                            x_idx, y_idx = 0, 0
-                
-                if x_idx > 0 or y_idx > 0:
-                    pages.append(current_page)
+                        
+                    # 1ページ分（表面と裏面）をまとめて生成する処理
+                    if y_idx >= rows or i == qr_end:
+                        front_page = Image.new("RGB", (a4_w_px, a4_h_px), "white")
+                        back_page = Image.new("RGB", (a4_w_px, a4_h_px), "white")
+                        draw_front = ImageDraw.Draw(front_page)
+                        draw_back = ImageDraw.Draw(back_page)
+                        
+                        for item in page_data:
+                            # -------------------------
+                            # 【表面】の描画処理
+                            # -------------------------
+                            fx = margin_px + item['x_idx'] * tag_w_px + int(5 * mm_to_px)
+                            fy = margin_px + item['y_idx'] * tag_h_px + top_padding
+                            front_page.paste(item['qr_img'], (fx, fy))
+                            
+                            # 外枠・パンチ穴描画（表面）
+                            draw_front.rectangle([fx - int(5 * mm_to_px), fy - top_padding, fx + qr_size_px + int(5 * mm_to_px), fy + qr_size_px + bottom_padding], outline="gray")
+                            draw_front.ellipse([fx + qr_size_px//2 - 10, fy - top_padding + 10, fx + qr_size_px//2 + 10, fy - top_padding + 30], outline="black")
+                            
+                            # -------------------------
+                            # 【裏面】の描画処理 (左右反転配置)
+                            # -------------------------
+                            bx_idx = cols - 1 - item['x_idx']
+                            bx = margin_px + bx_idx * tag_w_px + int(5 * mm_to_px)
+                            by = margin_px + item['y_idx'] * tag_h_px + top_padding
+                            
+                            # 外枠・パンチ穴描画（裏面）
+                            draw_back.rectangle([bx - int(5 * mm_to_px), by - top_padding, bx + qr_size_px + int(5 * mm_to_px), by + qr_size_px + bottom_padding], outline="gray")
+                            draw_back.ellipse([bx + qr_size_px//2 - 10, by - top_padding + 10, bx + qr_size_px//2 + 10, by - top_padding + 30], outline="black")
+                            
+                            # 裏面にタグ番号の巨大文字を描画
+                            try:
+                                text_bbox = draw_back.textbbox((0, 0), item['tag_str'], font=font)
+                                text_w = text_bbox[2] - text_bbox[0]
+                                text_h = text_bbox[3] - text_bbox[1]
+                            except AttributeError:
+                                text_w, text_h = draw_back.textsize(item['tag_str'], font=font)
+                            
+                            text_x = bx + (qr_size_px - text_w) // 2
+                            text_y = by + (qr_size_px - text_h) // 2
+                            draw_back.text((text_x, text_y), item['tag_str'], fill="black", font=font)
+                        
+                        pages.append(front_page)
+                        pages.append(back_page)
+                        
+                        # ページデータをリセット
+                        page_data = []
+                        x_idx, y_idx = 0, 0
                 
                 pdf_bytes = BytesIO()
+                # 表面と裏面を交互にPDFとして保存
                 pages[0].save(pdf_bytes, format="PDF", save_all=True, append_images=pages[1:])
+                
                 st.download_button(
-                    label="📥 作成したQRコードシート(PDF)をダウンロード",
+                    label="📥 作成した両面QRコードシート(PDF)をダウンロード",
                     data=pdf_bytes.getvalue(),
-                    file_name=f"qr_tags_{qr_start}_to_{qr_end}.pdf",
+                    file_name=f"qr_tags_{qr_start}_to_{qr_end}_duplex.pdf",
                     mime="application/pdf"
                 )
