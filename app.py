@@ -185,6 +185,8 @@ def register_new_item(tag_id):
     return item_code
 
 def update_item_record(item_code, **kwargs):
+    if not item_code:
+        return
     items_df = load_items()
     items_df['item_code'] = items_df['item_code'].astype(str)
     idx = items_df[items_df['item_code'] == str(item_code)].index
@@ -211,10 +213,33 @@ def unbind_tag(tag_id):
     return False
 
 def read_qr_from_bytes(file_bytes):
+    if file_bytes is None: return None
     img = cv2.imdecode(file_bytes, 1)
+    if img is None: return None
     detector = cv2.QRCodeDetector()
     data, _, _ = detector.detectAndDecode(img)
     return str(data).strip() if data else None
+
+# 🌟 画像保存ボタン用コールバック関数（押下時に同期）
+def sync_record_image(item_code, filename, file_bytes):
+    code = item_code
+    if not code and file_bytes is not None:
+        tag_id = read_qr_from_bytes(file_bytes)
+        if tag_id:
+            code = get_tag_info(tag_id) or register_new_item(tag_id)
+    if code and filename:
+        update_item_record(code, record_image=filename)
+        st.toast(f"📱 画像名「{filename}」を record_image 列に反映しました！")
+
+def sync_grade_image(item_code, filename, file_bytes):
+    code = item_code
+    if not code and file_bytes is not None:
+        tag_id = read_qr_from_bytes(file_bytes)
+        if tag_id:
+            code = get_tag_info(tag_id) or register_new_item(tag_id)
+    if code and filename:
+        update_item_record(code, grade_image=filename)
+        st.toast(f"📱 画像名「{filename}」を grade_image 列に反映しました！")
 
 # ==========================================
 # 3. OpenCV 画像処理・計測関数
@@ -378,12 +403,19 @@ with tab1:
 
             file_bytes_qr = np.asarray(bytearray(st.session_state.temp_record_bytes), dtype=np.uint8)
             
+            # QRコードの即時特定
+            cam_tag = read_qr_from_bytes(file_bytes_qr)
+            cam_item_code = get_tag_info(cam_tag) if cam_tag else None
+            
+            # 💾 ダウンロードボタン押下時にスプレッドシートへ同期
             st.download_button(
                 label="💾 撮影画像をスマホに保存",
                 data=st.session_state.temp_record_bytes,
                 file_name=st.session_state.record_img_filename,
                 mime="image/jpeg",
-                key="dl_cam_qr"
+                key="dl_cam_qr",
+                on_click=sync_record_image,
+                args=(cam_item_code, st.session_state.record_img_filename, file_bytes_qr)
             )
     elif img_source_qr == "アップロード":
         qr_img = st.file_uploader("QRコード画像を選択", type=["jpg", "jpeg", "png"], key="qr_upload")
@@ -451,10 +483,9 @@ with tab1:
                             break
                     
                     if updated:
-                        # 📝 画像ファイル名をスプレッドシートの record_image 列にセット
                         update_kwargs['record_image'] = st.session_state.get('record_img_filename', '')
                         update_item_record(item_code, **update_kwargs)
-                        st.success(f"🌱 スキャンを検知し、自動でデータベースを更新しました！ (保存画像名: {update_kwargs['record_image']})")
+                        st.success(f"🌱 スキャンを検知し、自動でデータベースを更新しました！ (画像名: {update_kwargs['record_image']})")
                         match = load_items().query(f"item_code == '{item_code}'")
                         item_data = match.iloc[0].to_dict() if not match.empty else {}
                 st.session_state.processed_qrs.add(tag_id)
@@ -488,8 +519,6 @@ with tab1:
             
             if st.button("💾 記録をまとめて更新する", type="primary", use_container_width=True):
                 update_kwargs = {'area_number': str(new_area), 'comment': str(new_comment)}
-                
-                # 📝 画像ファイル名をスプレッドシートの record_image 列にセット
                 update_kwargs['record_image'] = st.session_state.get('record_img_filename', '')
                 
                 for i in range(date_count):
@@ -497,7 +526,7 @@ with tab1:
                     update_kwargs[f"date_{i+1}"] = val.strftime("%Y-%m-%d") if val else ""
                 
                 update_item_record(item_code, **update_kwargs)
-                st.success(f"✅ アイテム【{item_code}】の記録を更新しました！ (保存画像名: {update_kwargs['record_image']})")
+                st.success(f"✅ アイテム【{item_code}】の記録を更新しました！ (画像名: {update_kwargs['record_image']})")
                 
         else:
             st.error("QRコードを検出できませんでした。再撮影してください。")
@@ -520,12 +549,19 @@ with tab2:
 
                 file_bytes_grade = np.asarray(bytearray(st.session_state.temp_grade_bytes), dtype=np.uint8)
                 
+                # QRコードの即時特定
+                cam_tag_g = read_qr_from_bytes(file_bytes_grade)
+                cam_item_code_g = get_tag_info(cam_tag_g) if cam_tag_g else None
+                
+                # 💾 ダウンロードボタン押下時にスプレッドシートへ同期
                 st.download_button(
                     label="💾 撮影画像をスマホに保存",
                     data=st.session_state.temp_grade_bytes,
                     file_name=st.session_state.grade_img_filename,
                     mime="image/jpeg",
-                    key="dl_cam_grade"
+                    key="dl_cam_grade",
+                    on_click=sync_grade_image,
+                    args=(cam_item_code_g, st.session_state.grade_img_filename, file_bytes_grade)
                 )
         elif img_source_grade == "アップロード":
             c_img = st.file_uploader("画像を選択", type=["jpg", "jpeg", "png"], key="grade_upload", on_change=clear_grade_result)
@@ -589,12 +625,11 @@ with tab2:
                                 'length': float(res['l_cm']), 'thickness': float(res['t_cm']),
                                 'curve': float(res['c_cm']), 'grade': str(res['grade_str']),
                                 'weight': float(harvest_weight),
-                                # 📝 画像ファイル名をスプレッドシートの grade_image 列にセット
                                 'grade_image': st.session_state.get('grade_img_filename', '')
                             }
                             
                             update_item_record(item_code, **update_kwargs)
-                            st.success(f"🎉 アイテム【{item_code}】の情報を登録しました！ (保存画像名: {update_kwargs['grade_image']})")
+                            st.success(f"🎉 アイテム【{item_code}】の情報を登録しました！ (画像名: {update_kwargs['grade_image']})")
                 else:
                     st.error("⚠️ 画像からQRコードを検出できませんでした。計測は完了しましたが、データベースには登録できません。")
 
@@ -687,7 +722,6 @@ with tab3:
                 pages = []
                 page_data = []
                 
-                # 🛠️ 修正: Streamlit Cloud (Linux) 環境でも確実に読み込めるようにフォントパスを追加
                 def get_large_font(size_px):
                     font_paths = [
                         "arialbd.ttf", "arial.ttf", 
@@ -703,10 +737,10 @@ with tab3:
                             return ImageFont.truetype(path, size_px)
                         except IOError:
                             continue
-                    return None # フォントが見つからない場合はNone
+                    return None
                 
-                # 枠からはみ出さない程度の巨大サイズ (QRコードサイズの80%) に設定
-                font_size = int(qr_size_px * 0.8)
+                # 🛠️ 修正: 裏面文字フォントサイズを「QRコードの40%」（前回の半分）に変更
+                font_size = int(qr_size_px * 0.4)
                 font = get_large_font(font_size)
                 default_font = ImageFont.load_default()
                 
@@ -752,7 +786,7 @@ with tab3:
                             draw_back.rectangle([bx - int(5 * mm_to_px), by - top_padding, bx + qr_size_px + int(5 * mm_to_px), by + qr_size_px + bottom_padding], outline="gray")
                             draw_back.ellipse([bx + qr_size_px//2 - 10, by - top_padding + 10, bx + qr_size_px//2 + 10, by - top_padding + 30], outline="black")
                             
-                            # 🛠️ 修正: フォントが読み込めた場合はそのまま描画、読み込めない場合は画像を強制リサイズするフォールバック処理
+                            # 🛠️ 修正: 綺麗な滑らかさで文字を描画（フォールバック時もスムーズに拡大）
                             if font:
                                 try:
                                     text_bbox = draw_back.textbbox((0, 0), item['tag_str'], font=font)
@@ -765,7 +799,6 @@ with tab3:
                                 text_y = by + (qr_size_px - text_h) // 2
                                 draw_back.text((text_x, text_y), item['tag_str'], fill="black", font=font)
                             else:
-                                # OS上にフォントが一つも無い場合の最終手段 (デフォルトの極小文字を画像として引き伸ばす)
                                 try:
                                     bbox = draw_back.textbbox((0, 0), item['tag_str'], font=default_font)
                                     w = bbox[2] - bbox[0]
@@ -779,7 +812,7 @@ with tab3:
                                     txt_img = Image.new("RGBA", (w, h), (255, 255, 255, 0))
                                     txt_draw = ImageDraw.Draw(txt_img)
                                     txt_draw.text((0, 0), item['tag_str'], font=default_font, fill="black")
-                                    txt_img = txt_img.resize((temp_w, temp_h), Image.Resampling.NEAREST)
+                                    txt_img = txt_img.resize((temp_w, temp_h), Image.Resampling.BILINEAR)
                                     
                                     text_x = bx + (qr_size_px - temp_w) // 2
                                     text_y = by + (qr_size_px - temp_h) // 2
