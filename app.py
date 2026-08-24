@@ -10,6 +10,7 @@ import os
 import qrcode
 from PIL import Image, ImageDraw, ImageFont
 from io import BytesIO
+import base64
 import streamlit.components.v1 as components
 
 # ==========================================
@@ -17,6 +18,11 @@ import streamlit.components.v1 as components
 # ==========================================
 st.set_page_config(page_title="管理＆判定システム", layout="wide")
 conn = st.connection("gsheets", type=GSheetsConnection)
+
+# 保存用フォルダの作成
+SAVE_DIR = "saved_images"
+if not os.path.exists(SAVE_DIR):
+    os.makedirs(SAVE_DIR)
 
 def load_settings():
     for attempt in range(3):
@@ -60,7 +66,7 @@ c_name = st.session_state.settings.get("crop_name", "キュウリ")
 c_emoji = st.session_state.settings.get("emoji", "🥒")
 
 # ==========================================
-# 🌟 通知音・振動機能 (JavaScript)
+# 🌟 条件②: 通知音・振動機能 (カメラ撮影時も必ず再生)
 # ==========================================
 def play_notification_sound():
     js_code = """
@@ -72,21 +78,48 @@ def play_notification_sound():
         var gainNode = audioCtx.createGain();
         oscillator.type = 'sine';
         oscillator.frequency.setValueAtTime(880, audioCtx.currentTime);
-        gainNode.gain.setValueAtTime(0.1, audioCtx.currentTime);
+        gainNode.gain.setValueAtTime(0.2, audioCtx.currentTime);
         oscillator.connect(gainNode);
         gainNode.connect(audioCtx.destination);
         oscillator.start();
-        setTimeout(function(){ oscillator.stop(); }, 150);
-    } catch(e) { console.log("Audio/Vibration not supported or blocked"); }
+        setTimeout(function(){ oscillator.stop(); }, 200);
+    } catch(e) { console.log("Audio/Vibration error:", e); }
     </script>
     """
     components.html(js_code, height=0, width=0)
 
 # ==========================================
+# 🌟 条件③: スマホローカル（端末）への画像自動保存ヘルパー
+# ==========================================
+def save_image_to_device_and_server(image_bytes, prefix="capture"):
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"{prefix}_{timestamp}.jpg"
+    
+    # 1. サーバー側に保存
+    server_path = os.path.join(SAVE_DIR, filename)
+    with open(server_path, "wb") as f:
+        f.write(image_bytes)
+        
+    # 2. スマホ端末（ブラウザダウンロード）へ自動ダウンロード保存させるJavaScript
+    b64_str = base64.b64encode(image_bytes).decode('utf-8')
+    download_js = f"""
+    <script>
+    var a = document.createElement('a');
+    a.href = 'data:image/jpeg;base64,{b64_str}';
+    a.download = '{filename}';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    </script>
+    """
+    components.html(download_js, height=0, width=0)
+    return server_path
+
+# ==========================================
 # 🌟 GitHub サンプル画像のURL設定
 # ==========================================
-SAMPLE1_URL = "https://raw.githubusercontent.com//yasaibusisetuengei/Cucumber-QR-POS/main/sample/sample1.png"
-SAMPLE2_URL = "https://raw.githubusercontent.com//yasaibusisetuengei/Cucumber-QR-POS/main/sample/sample2.jpg"
+SAMPLE1_URL = "https://raw.githubusercontent.com//yasaibusisetusengei/Cucumber-QR-POS/main/sample/sample1.png"
+SAMPLE2_URL = "https://raw.githubusercontent.com//yasaibusisetusengei/Cucumber-QR-POS/main/sample/sample2.jpg"
 
 def get_image_bytes_from_url(url):
     try:
@@ -371,6 +404,8 @@ with tab1:
         if qr_img:
             st.session_state.temp_record_bytes = qr_img.getvalue()
             file_bytes_qr = np.asarray(bytearray(st.session_state.temp_record_bytes), dtype=np.uint8)
+            # ★条件③: スマホ端末＆サーバーに撮影画像を自動保存
+            save_image_to_device_and_server(st.session_state.temp_record_bytes, prefix="record")
     elif img_source_qr == "アップロード":
         qr_img = st.file_uploader("QRコード画像を選択", type=["jpg", "jpeg", "png"], key="qr_upload")
         if qr_img: file_bytes_qr = np.asarray(bytearray(qr_img.read()), dtype=np.uint8)
@@ -388,9 +423,8 @@ with tab1:
         
         if tag_id:
             if st.session_state.last_scanned_tag != tag_id:
-                # ★条件②: カメラ撮影の時は通知音を鳴らさないようにする
-                if img_source_qr != "カメラ":
-                    play_notification_sound()
+                # ★条件②: カメラ撮影時でも必ず音を鳴らす
+                play_notification_sound()
                 st.session_state.last_scanned_tag = tag_id
                 
             st.success(f"🏷️ タグを認識しました: {tag_id}")
@@ -435,10 +469,8 @@ with tab1:
                             break
                     
                     if updated:
-                        # ★条件③: 画像を無駄に保存しないよう保存処理を削除
                         update_item_record(item_code, **update_kwargs)
                         st.success("🌱 スキャンを検知し、自動でデータベースを更新しました！")
-                        # 画面再表示用のデータリロード
                         match = load_items().query(f"item_code == '{item_code}'")
                         item_data = match.iloc[0].to_dict() if not match.empty else {}
                 st.session_state.processed_qrs.add(tag_id)
@@ -451,7 +483,7 @@ with tab1:
             if current_area not in area_opts: area_opts.insert(0, current_area)
             new_area = st.selectbox("試験エリア番号", area_opts, index=area_opts.index(current_area))
             
-            # 動的日付項目の配置 (3列ごと)
+            # 動的日付項目の配置
             date_labels = st.session_state.settings.get("date_labels", "").split(",")
             cols = st.columns(3)
             for i in range(date_count):
@@ -478,7 +510,6 @@ with tab1:
                     val = st.session_state[f"d{i+1}_{item_code}"]
                     update_kwargs[f"date_{i+1}"] = val.strftime("%Y-%m-%d") if val else ""
                 
-                # ★条件③: 画像を無駄に保存しないよう保存処理を削除
                 update_item_record(item_code, **update_kwargs)
                 st.success(f"✅ アイテム【{item_code}】の記録を更新しました！")
                 
@@ -497,6 +528,8 @@ with tab2:
             if c_img:
                 st.session_state.temp_grade_bytes = c_img.getvalue()
                 file_bytes_grade = np.asarray(bytearray(st.session_state.temp_grade_bytes), dtype=np.uint8)
+                # ★条件③: スマホ端末＆サーバーに撮影画像を自動保存
+                save_image_to_device_and_server(st.session_state.temp_grade_bytes, prefix="grade")
         elif img_source_grade == "アップロード":
             c_img = st.file_uploader("画像を選択", type=["jpg", "jpeg", "png"], key="grade_upload", on_change=clear_grade_result)
             if c_img: file_bytes_grade = np.asarray(bytearray(c_img.read()), dtype=np.uint8)
@@ -539,9 +572,8 @@ with tab2:
             if res['l_cm'] is not None:
                 if res['tag_id']:
                     if st.session_state.last_scanned_tag != res['tag_id']:
-                        # ★条件②: カメラ撮影の時は通知音を鳴らさないようにする
-                        if img_source_grade != "カメラ":
-                            play_notification_sound()
+                        # ★条件②: カメラ撮影時でも必ず音を鳴らす
+                        play_notification_sound()
                         st.session_state.last_scanned_tag = res['tag_id']
                         
                     st.success(f"✅ タグ【{res['tag_id']}】を検出しました。重さを入力して登録を完了させてください。")
@@ -558,7 +590,6 @@ with tab2:
                                 'curve': float(res['c_cm']), 'grade': str(res['grade_str']),
                                 'weight': float(harvest_weight)
                             }
-                            # ★条件③: 画像を無駄に保存しないよう保存処理を削除
                             
                             update_item_record(item_code, **update_kwargs)
                             st.success(f"🎉 アイテム【{item_code}】の情報を登録しました！")
@@ -654,19 +685,27 @@ with tab3:
                 current_page = Image.new("RGB", (a4_w_px, a4_h_px), "white")
                 draw_page = ImageDraw.Draw(current_page)
                 
-                # ★条件①: 途切れていたPDF生成の補完と印字サイズの3倍拡大化
-                def get_font(size_px):
-                    try:
-                        return ImageFont.truetype("arial.ttf", size_px)
-                    except IOError:
+                # ★条件①: フォント取得処理を確実化し、文字サイズを特大（QRサイズの約40%）に設定
+                font_size = int(qr_size_px * 0.40)
+                
+                def get_large_font(size):
+                    font_paths = [
+                        "arial.ttf", "Arial.ttf", "DejaVuSans-Bold.ttf", "DejaVuSans.ttf",
+                        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+                        "/System/Library/Fonts/Helvetica.ttc",
+                        "C:\\Windows\\Fonts\\arial.ttf"
+                    ]
+                    for path in font_paths:
                         try:
-                            return ImageFont.truetype("DejaVuSans.ttf", size_px)
-                        except IOError:
-                            return ImageFont.load_default()
-                            
-                # QRコードサイズに応じて、印字フォントを大きめ（約30%）に設定
-                font_size = int(qr_size_px * 0.3)
-                font = get_font(font_size)
+                            return ImageFont.truetype(path, size)
+                        except Exception:
+                            continue
+                    try:
+                        return ImageFont.load_default(size=size)
+                    except TypeError:
+                        return ImageFont.load_default()
+                
+                font = get_large_font(font_size)
                 
                 x_idx, y_idx = 0, 0
                 for i in range(qr_start, qr_end + 1):
@@ -682,7 +721,7 @@ with tab3:
                     qr_img = qr.make_image(fill_color="black", back_color="white").convert("RGB")
                     qr_img = qr_img.resize((qr_size_px, qr_size_px))
                     
-                    # --- QRコード中央への巨大な文字の描画 ---
+                    # --- QRコード中央へ特大文字の描画 ---
                     draw_qr = ImageDraw.Draw(qr_img)
                     try:
                         text_bbox = draw_qr.textbbox((0, 0), tag_str, font=font)
@@ -694,10 +733,14 @@ with tab3:
                     text_x = (qr_size_px - text_w) // 2
                     text_y = (qr_size_px - text_h) // 2
                     
-                    # 文字が見やすいように背景を白で塗りつぶす
+                    # 文字の中央領域を白枠で背景クリアして巨大文字を描画
+                    bg_pad_x = int(text_w * 0.2) + 10
+                    bg_pad_y = int(text_h * 0.2) + 10
                     draw_qr.rectangle(
-                        [text_x - 5, text_y - 5, text_x + text_w + 5, text_y + text_h + 5],
-                        fill="white"
+                        [text_x - bg_pad_x, text_y - bg_pad_y, text_x + text_w + bg_pad_x, text_y + text_h + bg_pad_y],
+                        fill="white",
+                        outline="black",
+                        width=2
                     )
                     draw_qr.text((text_x, text_y), tag_str, fill="black", font=font)
                     
@@ -706,7 +749,7 @@ with tab3:
                     y = margin_px + y_idx * tag_h_px + top_padding
                     current_page.paste(qr_img, (x, y))
                     
-                    # 外枠やパンチ穴
+                    # 外枠およびパンチ穴ガイド
                     draw_page.rectangle([x - int(5 * mm_to_px), y - top_padding, x + qr_size_px + int(5 * mm_to_px), y + qr_size_px + bottom_padding], outline="gray")
                     draw_page.ellipse([x + qr_size_px//2 - 10, y - top_padding + 10, x + qr_size_px//2 + 10, y - top_padding + 30], outline="black")
                     
