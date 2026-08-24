@@ -370,7 +370,6 @@ with tab1:
     if img_source_qr == "カメラ":
         qr_img = st.camera_input("QRコードを撮影", key="qr_camera")
         if qr_img:
-            # 修正:UploadedFileには.idが無いためハッシュ値を利用
             img_key = hash(qr_img.getvalue())
             if "record_img_id" not in st.session_state or st.session_state.record_img_id != img_key:
                 st.session_state.record_img_id = img_key
@@ -452,9 +451,10 @@ with tab1:
                             break
                     
                     if updated:
+                        # 📝 画像ファイル名をスプレッドシートの record_image 列にセット
                         update_kwargs['record_image'] = st.session_state.get('record_img_filename', '')
                         update_item_record(item_code, **update_kwargs)
-                        st.success("🌱 スキャンを検知し、自動でデータベースを更新しました！")
+                        st.success(f"🌱 スキャンを検知し、自動でデータベースを更新しました！ (保存画像名: {update_kwargs['record_image']})")
                         match = load_items().query(f"item_code == '{item_code}'")
                         item_data = match.iloc[0].to_dict() if not match.empty else {}
                 st.session_state.processed_qrs.add(tag_id)
@@ -488,6 +488,8 @@ with tab1:
             
             if st.button("💾 記録をまとめて更新する", type="primary", use_container_width=True):
                 update_kwargs = {'area_number': str(new_area), 'comment': str(new_comment)}
+                
+                # 📝 画像ファイル名をスプレッドシートの record_image 列にセット
                 update_kwargs['record_image'] = st.session_state.get('record_img_filename', '')
                 
                 for i in range(date_count):
@@ -495,7 +497,7 @@ with tab1:
                     update_kwargs[f"date_{i+1}"] = val.strftime("%Y-%m-%d") if val else ""
                 
                 update_item_record(item_code, **update_kwargs)
-                st.success(f"✅ アイテム【{item_code}】の記録を更新しました！")
+                st.success(f"✅ アイテム【{item_code}】の記録を更新しました！ (保存画像名: {update_kwargs['record_image']})")
                 
         else:
             st.error("QRコードを検出できませんでした。再撮影してください。")
@@ -510,7 +512,6 @@ with tab2:
         if img_source_grade == "カメラ":
             c_img = st.camera_input(f"{c_name}を撮影（A4マーカー枠＆QRコード必須）", key="grade_camera", on_change=clear_grade_result)
             if c_img:
-                # 修正:UploadedFileには.idが無いためハッシュ値を利用
                 img_key = hash(c_img.getvalue())
                 if "grade_img_id" not in st.session_state or st.session_state.grade_img_id != img_key:
                     st.session_state.grade_img_id = img_key
@@ -588,11 +589,12 @@ with tab2:
                                 'length': float(res['l_cm']), 'thickness': float(res['t_cm']),
                                 'curve': float(res['c_cm']), 'grade': str(res['grade_str']),
                                 'weight': float(harvest_weight),
+                                # 📝 画像ファイル名をスプレッドシートの grade_image 列にセット
                                 'grade_image': st.session_state.get('grade_img_filename', '')
                             }
                             
                             update_item_record(item_code, **update_kwargs)
-                            st.success(f"🎉 アイテム【{item_code}】の情報を登録しました！")
+                            st.success(f"🎉 アイテム【{item_code}】の情報を登録しました！ (保存画像名: {update_kwargs['grade_image']})")
                 else:
                     st.error("⚠️ 画像からQRコードを検出できませんでした。計測は完了しましたが、データベースには登録できません。")
 
@@ -685,19 +687,28 @@ with tab3:
                 pages = []
                 page_data = []
                 
-                # フォント読み込み処理（太字対応）
+                # 🛠️ 修正: Streamlit Cloud (Linux) 環境でも確実に読み込めるようにフォントパスを追加
                 def get_large_font(size_px):
-                    font_names = ["arialbd.ttf", "arial.ttf", "DejaVuSans-Bold.ttf", "DejaVuSans.ttf"]
-                    for fname in font_names:
+                    font_paths = [
+                        "arialbd.ttf", "arial.ttf", 
+                        "DejaVuSans-Bold.ttf", "DejaVuSans.ttf",
+                        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+                        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+                        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+                        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+                        "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf"
+                    ]
+                    for path in font_paths:
                         try:
-                            return ImageFont.truetype(fname, size_px)
+                            return ImageFont.truetype(path, size_px)
                         except IOError:
                             continue
-                    return ImageFont.load_default()
+                    return None # フォントが見つからない場合はNone
                 
-                # 修正:裏面印刷用フォントを従来の3倍に拡大 (0.4 -> 1.2)
-                font_size = int(qr_size_px * 1.2)
+                # 枠からはみ出さない程度の巨大サイズ (QRコードサイズの80%) に設定
+                font_size = int(qr_size_px * 0.8)
                 font = get_large_font(font_size)
+                default_font = ImageFont.load_default()
                 
                 x_idx, y_idx = 0, 0
                 for i in range(qr_start, qr_end + 1):
@@ -720,7 +731,6 @@ with tab3:
                         x_idx = 0
                         y_idx += 1
                         
-                    # 1ページ分（表面と裏面）をまとめて生成する処理
                     if y_idx >= rows or i == qr_end:
                         front_page = Image.new("RGB", (a4_w_px, a4_h_px), "white")
                         back_page = Image.new("RGB", (a4_w_px, a4_h_px), "white")
@@ -728,44 +738,56 @@ with tab3:
                         draw_back = ImageDraw.Draw(back_page)
                         
                         for item in page_data:
-                            # -------------------------
-                            # 【表面】の描画処理
-                            # -------------------------
+                            # --- 表面 ---
                             fx = margin_px + item['x_idx'] * tag_w_px + int(5 * mm_to_px)
                             fy = margin_px + item['y_idx'] * tag_h_px + top_padding
                             front_page.paste(item['qr_img'], (fx, fy))
-                            
-                            # 外枠・パンチ穴描画（表面）
                             draw_front.rectangle([fx - int(5 * mm_to_px), fy - top_padding, fx + qr_size_px + int(5 * mm_to_px), fy + qr_size_px + bottom_padding], outline="gray")
                             draw_front.ellipse([fx + qr_size_px//2 - 10, fy - top_padding + 10, fx + qr_size_px//2 + 10, fy - top_padding + 30], outline="black")
                             
-                            # -------------------------
-                            # 【裏面】の描画処理 (左右反転配置)
-                            # -------------------------
+                            # --- 裏面 ---
                             bx_idx = cols - 1 - item['x_idx']
                             bx = margin_px + bx_idx * tag_w_px + int(5 * mm_to_px)
                             by = margin_px + item['y_idx'] * tag_h_px + top_padding
-                            
-                            # 外枠・パンチ穴描画（裏面）
                             draw_back.rectangle([bx - int(5 * mm_to_px), by - top_padding, bx + qr_size_px + int(5 * mm_to_px), by + qr_size_px + bottom_padding], outline="gray")
                             draw_back.ellipse([bx + qr_size_px//2 - 10, by - top_padding + 10, bx + qr_size_px//2 + 10, by - top_padding + 30], outline="black")
                             
-                            # 裏面にタグ番号の巨大文字を描画（3倍に拡大したフォントを適用）
-                            try:
-                                text_bbox = draw_back.textbbox((0, 0), item['tag_str'], font=font)
-                                text_w = text_bbox[2] - text_bbox[0]
-                                text_h = text_bbox[3] - text_bbox[1]
-                            except AttributeError:
-                                text_w, text_h = draw_back.textsize(item['tag_str'], font=font)
-                            
-                            text_x = bx + (qr_size_px - text_w) // 2
-                            text_y = by + (qr_size_px - text_h) // 2
-                            draw_back.text((text_x, text_y), item['tag_str'], fill="black", font=font)
+                            # 🛠️ 修正: フォントが読み込めた場合はそのまま描画、読み込めない場合は画像を強制リサイズするフォールバック処理
+                            if font:
+                                try:
+                                    text_bbox = draw_back.textbbox((0, 0), item['tag_str'], font=font)
+                                    text_w = text_bbox[2] - text_bbox[0]
+                                    text_h = text_bbox[3] - text_bbox[1]
+                                except AttributeError:
+                                    text_w, text_h = draw_back.textsize(item['tag_str'], font=font)
+                                
+                                text_x = bx + (qr_size_px - text_w) // 2
+                                text_y = by + (qr_size_px - text_h) // 2
+                                draw_back.text((text_x, text_y), item['tag_str'], fill="black", font=font)
+                            else:
+                                # OS上にフォントが一つも無い場合の最終手段 (デフォルトの極小文字を画像として引き伸ばす)
+                                try:
+                                    bbox = draw_back.textbbox((0, 0), item['tag_str'], font=default_font)
+                                    w = bbox[2] - bbox[0]
+                                    h = bbox[3] - bbox[1]
+                                except:
+                                    w, h = draw_back.textsize(item['tag_str'], font=default_font)
+                                
+                                if w > 0 and h > 0:
+                                    scale = font_size / max(h, 1)
+                                    temp_w, temp_h = int(w * scale), int(h * scale)
+                                    txt_img = Image.new("RGBA", (w, h), (255, 255, 255, 0))
+                                    txt_draw = ImageDraw.Draw(txt_img)
+                                    txt_draw.text((0, 0), item['tag_str'], font=default_font, fill="black")
+                                    txt_img = txt_img.resize((temp_w, temp_h), Image.Resampling.NEAREST)
+                                    
+                                    text_x = bx + (qr_size_px - temp_w) // 2
+                                    text_y = by + (qr_size_px - temp_h) // 2
+                                    back_page.paste(txt_img, (text_x, text_y), txt_img)
                         
                         pages.append(front_page)
                         pages.append(back_page)
                         
-                        # ページデータをリセット
                         page_data = []
                         x_idx, y_idx = 0, 0
                 
