@@ -427,7 +427,7 @@ def generate_qr_pdf(
     pages = []
     page_data = []
 
-    font_size = max(10, int(qr_size_px * 0.10))
+    font_size = max(10, int(qr_size_px * 0.30))
     font = get_large_font(font_size)
 
     x_idx, y_idx = 0, 0
