@@ -235,11 +235,23 @@ def sync_grade_image(item_code, filename, file_bytes):
     code = item_code
     if not code and file_bytes is not None:
         tag_id = read_qr_from_bytes(file_bytes)
+        # 修正: 台形補正してからQRを読み取るフォールバック処理を追加
+        if not tag_id:
+            img = cv2.imdecode(file_bytes, 1)
+            if img is not None:
+                warped, err = detect_and_warp(img)
+                if not err and warped is not None:
+                    detector = cv2.QRCodeDetector()
+                    data, _, _ = detector.detectAndDecode(cv2.cvtColor(warped, cv2.RGB2BGR))
+                    tag_id = str(data).strip() if data else None
         if tag_id:
             code = get_tag_info(tag_id) or register_new_item(tag_id)
+            
     if code and filename:
         update_item_record(code, grade_image=filename)
         st.toast(f"📱 画像名「{filename}」を grade_image 列に反映しました！")
+    elif not code:
+        st.toast("⚠️ QRコードが検出できなかったため、画像名の保存は保留されました。判定実行時に登録されます。")
 
 # ==========================================
 # 3. OpenCV 画像処理・計測関数
@@ -401,6 +413,8 @@ with tab1:
                 st.session_state.record_img_filename = f"scan_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg"
                 st.session_state.temp_record_bytes = qr_img.getvalue()
 
+        # 修正: session_stateに画像があればダウンロードボタンを表示し続けることで再レンダリングによる消失を防止
+        if "temp_record_bytes" in st.session_state and st.session_state.temp_record_bytes:
             file_bytes_qr = np.asarray(bytearray(st.session_state.temp_record_bytes), dtype=np.uint8)
             
             # QRコードの即時特定
@@ -417,6 +431,7 @@ with tab1:
                 on_click=sync_record_image,
                 args=(cam_item_code, st.session_state.record_img_filename, file_bytes_qr)
             )
+            
     elif img_source_qr == "アップロード":
         qr_img = st.file_uploader("QRコード画像を選択", type=["jpg", "jpeg", "png"], key="qr_upload")
         if qr_img: 
@@ -547,9 +562,11 @@ with tab2:
                     st.session_state.grade_img_filename = f"grade_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg"
                     st.session_state.temp_grade_bytes = c_img.getvalue()
 
+            # 修正: session_stateに画像があればダウンロードボタンを表示し続けることで再レンダリングによる消失を防止
+            if "temp_grade_bytes" in st.session_state and st.session_state.temp_grade_bytes:
                 file_bytes_grade = np.asarray(bytearray(st.session_state.temp_grade_bytes), dtype=np.uint8)
                 
-                # QRコードの即時特定
+                # QRコードの即時特定（読めない場合は後のsync_grade_image内で台形補正して再試行）
                 cam_tag_g = read_qr_from_bytes(file_bytes_grade)
                 cam_item_code_g = get_tag_info(cam_tag_g) if cam_tag_g else None
                 
@@ -563,6 +580,7 @@ with tab2:
                     on_click=sync_grade_image,
                     args=(cam_item_code_g, st.session_state.grade_img_filename, file_bytes_grade)
                 )
+
         elif img_source_grade == "アップロード":
             c_img = st.file_uploader("画像を選択", type=["jpg", "jpeg", "png"], key="grade_upload", on_change=clear_grade_result)
             if c_img: 
@@ -739,8 +757,8 @@ with tab3:
                             continue
                     return None
                 
-                # 🛠️ 修正: 裏面文字フォントサイズを「QRコードの40%」（前回の半分）に変更
-                font_size = int(qr_size_px * 0.4)
+                # 🛠️ 修正: 裏面文字フォントサイズを「QRコードの25%」に変更しはみ出しを防止
+                font_size = int(qr_size_px * 0.25)
                 font = get_large_font(font_size)
                 default_font = ImageFont.load_default()
                 
@@ -786,7 +804,7 @@ with tab3:
                             draw_back.rectangle([bx - int(5 * mm_to_px), by - top_padding, bx + qr_size_px + int(5 * mm_to_px), by + qr_size_px + bottom_padding], outline="gray")
                             draw_back.ellipse([bx + qr_size_px//2 - 10, by - top_padding + 10, bx + qr_size_px//2 + 10, by - top_padding + 30], outline="black")
                             
-                            # 🛠️ 修正: 綺麗な滑らかさで文字を描画（フォールバック時もスムーズに拡大）
+                            # 🛠️ 綺麗な滑らかさで文字を描画
                             if font:
                                 try:
                                     text_bbox = draw_back.textbbox((0, 0), item['tag_str'], font=font)
