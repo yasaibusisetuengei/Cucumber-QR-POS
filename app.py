@@ -381,126 +381,159 @@ def process_measurement(image, crop_name="キュウリ"):
 # ==========================================
 # 🌟 PDF生成用ヘルパー関数 (修正箇所)
 # ==========================================
-def get_large_font(size_px: int):
-    """システムフォントを安全に検索して取得"""
-    for path in FONT_PATHS:
+def get_large_font(font_size: int):
+    """OS共通のTrueTypeフォントを読み込み（解像度崩れを防止）"""
+    font_targets = [
+        "arial.ttf",
+        "DejaVuSans.ttf",
+        "Helvetica.ttc",
+        "msgothic.ttc",
+    ]
+    for font_name in font_targets:
         try:
-            return ImageFont.truetype(path, size_px)
+            return ImageFont.truetype(font_name, font_size)
         except IOError:
             continue
-    return None
 
-def generate_qr_pdf(qr_start: int, qr_end: int, qr_size_mm: int) -> bytes:
-    """印刷用両面QRコードシート(PDF)を生成"""
+    # Pillow 10.1.0以降であれば size 引数が利用可能
+    try:
+        return ImageFont.load_default(size=font_size)
+    except TypeError:
+        return ImageFont.load_default()
+
+
+def generate_qr_pdf(
+    qr_start: int, qr_end: int, qr_size_mm: int
+) -> bytes | None:
     dpi = 300
     mm_to_px = dpi / 25.4
     a4_w_px, a4_h_px = int(210 * mm_to_px), int(297 * mm_to_px)
     qr_size_px = int(qr_size_mm * mm_to_px)
     margin_px = int(10 * mm_to_px)
-    
+
     top_padding = int(15 * mm_to_px)
     bottom_padding = int(5 * mm_to_px)
     tag_w_px = qr_size_px + int(10 * mm_to_px)
     tag_h_px = qr_size_px + top_padding + bottom_padding
-    
+
     usable_w = a4_w_px - margin_px * 2
     usable_h = a4_h_px - margin_px * 2
     cols = usable_w // tag_w_px
     rows = usable_h // tag_h_px
-    
+
     if cols == 0 or rows == 0:
         return None
 
     pages = []
     page_data = []
-    
-    # 🎯 修正: フォントサイズを「QRコードサイズの10%」に指定 (最小10px)
+
     font_size = max(10, int(qr_size_px * 0.10))
     font = get_large_font(font_size)
-    default_font = ImageFont.load_default()
 
     x_idx, y_idx = 0, 0
     for i in range(qr_start, qr_end + 1):
         tag_str = str(i)
         qr = qrcode.QRCode(
             version=1,
-            error_correction=qrcode.constants.ERROR_CORRECT_H, 
+            error_correction=qrcode.constants.ERROR_CORRECT_H,
             box_size=10,
             border=4,
         )
         qr.add_data(tag_str)
         qr.make(fit=True)
-        qr_img = qr.make_image(fill_color="black", back_color="white").convert("RGB")
+        qr_img = qr.make_image(fill_color="black", back_color="white").convert(
+            "RGB"
+        )
         qr_img = qr_img.resize((qr_size_px, qr_size_px))
-        
-        page_data.append({'x_idx': x_idx, 'y_idx': y_idx, 'tag_str': tag_str, 'qr_img': qr_img})
-        
+
+        page_data.append(
+            {
+                "x_idx": x_idx,
+                "y_idx": y_idx,
+                "tag_str": tag_str,
+                "qr_img": qr_img,
+            }
+        )
+
         x_idx += 1
         if x_idx >= cols:
             x_idx = 0
             y_idx += 1
-            
+
         if y_idx >= rows or i == qr_end:
             front_page = Image.new("RGB", (a4_w_px, a4_h_px), "white")
             back_page = Image.new("RGB", (a4_w_px, a4_h_px), "white")
             draw_front = ImageDraw.Draw(front_page)
             draw_back = ImageDraw.Draw(back_page)
-            
+
             for item in page_data:
                 # --- 表面 ---
-                fx = margin_px + item['x_idx'] * tag_w_px + int(5 * mm_to_px)
-                fy = margin_px + item['y_idx'] * tag_h_px + top_padding
-                front_page.paste(item['qr_img'], (fx, fy))
-                draw_front.rectangle([fx - int(5 * mm_to_px), fy - top_padding, fx + qr_size_px + int(5 * mm_to_px), fy + qr_size_px + bottom_padding], outline="gray")
-                draw_front.ellipse([fx + qr_size_px//2 - 10, fy - top_padding + 10, fx + qr_size_px//2 + 10, fy - top_padding + 30], outline="black")
-                
-                # --- 裏面 (長辺とじ両面印刷対応のため左右反転) ---
-                bx_idx = cols - 1 - item['x_idx']
+                fx = margin_px + item["x_idx"] * tag_w_px + int(5 * mm_to_px)
+                fy = margin_px + item["y_idx"] * tag_h_px + top_padding
+                front_page.paste(item["qr_img"], (fx, fy))
+                draw_front.rectangle(
+                    [
+                        fx - int(5 * mm_to_px),
+                        fy - top_padding,
+                        fx + qr_size_px + int(5 * mm_to_px),
+                        fy + qr_size_px + bottom_padding,
+                    ],
+                    outline="gray",
+                )
+                draw_front.ellipse(
+                    [
+                        fx + qr_size_px // 2 - 10,
+                        fy - top_padding + 10,
+                        fx + qr_size_px // 2 + 10,
+                        fy - top_padding + 30,
+                    ],
+                    outline="black",
+                )
+
+                # --- 裏面 ---
+                bx_idx = cols - 1 - item["x_idx"]
                 bx = margin_px + bx_idx * tag_w_px + int(5 * mm_to_px)
-                by = margin_px + item['y_idx'] * tag_h_px + top_padding
-                draw_back.rectangle([bx - int(5 * mm_to_px), by - top_padding, bx + qr_size_px + int(5 * mm_to_px), by + qr_size_px + bottom_padding], outline="gray")
-                draw_back.ellipse([bx + qr_size_px//2 - 10, by - top_padding + 10, bx + qr_size_px//2 + 10, by - top_padding + 30], outline="black")
-                
-                # 🎯 裏面文字の精密描画 (中央配置)
-                if font:
-                    try:
-                        text_bbox = draw_back.textbbox((0, 0), item['tag_str'], font=font)
-                        text_w = text_bbox[2] - text_bbox[0]
-                        text_h = text_bbox[3] - text_bbox[1]
-                    except AttributeError:
-                        text_w, text_h = draw_back.textsize(item['tag_str'], font=font)
-                    
-                    text_x = bx + (qr_size_px - text_w) // 2
-                    text_y = by + (qr_size_px - text_h) // 2
-                    draw_back.text((text_x, text_y), item['tag_str'], fill="black", font=font)
-                else:
-                    try:
-                        bbox = draw_back.textbbox((0, 0), item['tag_str'], font=default_font)
-                        w = bbox[2] - bbox[0]
-                        h = bbox[3] - bbox[1]
-                    except Exception:
-                        w, h = draw_back.textsize(item['tag_str'], font=default_font)
-                    
-                    if w > 0 and h > 0:
-                        scale = font_size / max(h, 1)
-                        temp_w, temp_h = int(w * scale), int(h * scale)
-                        txt_img = Image.new("RGBA", (w, h), (255, 255, 255, 0))
-                        txt_draw = ImageDraw.Draw(txt_img)
-                        txt_draw.text((0, 0), item['tag_str'], font=default_font, fill="black")
-                        txt_img = txt_img.resize((temp_w, temp_h), Image.Resampling.BILINEAR)
-                        
-                        text_x = bx + (qr_size_px - temp_w) // 2
-                        text_y = by + (qr_size_px - temp_h) // 2
-                        back_page.paste(txt_img, (text_x, text_y), txt_img)
-            
+                by = margin_px + item["y_idx"] * tag_h_px + top_padding
+                draw_back.rectangle(
+                    [
+                        bx - int(5 * mm_to_px),
+                        by - top_padding,
+                        bx + qr_size_px + int(5 * mm_to_px),
+                        by + qr_size_px + bottom_padding,
+                    ],
+                    outline="gray",
+                )
+                draw_back.ellipse(
+                    [
+                        bx + qr_size_px // 2 - 10,
+                        by - top_padding + 10,
+                        bx + qr_size_px // 2 + 10,
+                        by - top_padding + 30,
+                    ],
+                    outline="black",
+                )
+
+                # 🎯 裏面文字の精密描画（アンカー指定で拡大・切れを完全防止）
+                center_x = bx + qr_size_px // 2
+                center_y = by + qr_size_px // 2
+                draw_back.text(
+                    (center_x, center_y),
+                    item["tag_str"],
+                    fill="black",
+                    font=font,
+                    anchor="mm",
+                )
+
             pages.append(front_page)
             pages.append(back_page)
-            
+
             page_data = []
             x_idx, y_idx = 0, 0
 
     pdf_bytes = BytesIO()
-    pages[0].save(pdf_bytes, format="PDF", save_all=True, append_images=pages[1:])
+    pages[0].save(
+        pdf_bytes, format="PDF", save_all=True, append_images=pages[1:]
+    )
     return pdf_bytes.getvalue()
 
 # ==========================================
