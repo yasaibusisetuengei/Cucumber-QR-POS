@@ -6,19 +6,47 @@ import cv2
 import numpy as np
 import urllib.request
 import time
-import os
 import qrcode
 from PIL import Image, ImageDraw, ImageFont
 from io import BytesIO
 import streamlit.components.v1 as components
 
 # ==========================================
-# 🌟 データベース接続と設定の初期化
+# 🌟 定数および初期設定
 # ==========================================
+A4_W_MM, A4_H_MM = 297.0, 210.0
+PPM = 3.0
+A4_W_PX, A4_H_PX = int(A4_W_MM * PPM), int(A4_H_MM * PPM)
+MARKER_OFFSET_MM = 15.0
+OFFSET_PX = int(MARKER_OFFSET_MM * PPM)
+DIST_5CM_PX = 50.0 * PPM
+
+COLOR_CONTOUR = (0, 255, 0)
+COLOR_TABLE_LINE = (255, 255, 0)
+COLOR_CURVE_LINE = (255, 0, 0)
+COLOR_THICKNESS = (255, 0, 255)
+
+SAMPLE1_URL = "https://raw.githubusercontent.com//yasaibusisetuengei/Cucumber-QR-POS/main/sample/sample1.png"
+SAMPLE2_URL = "https://raw.githubusercontent.com//yasaibusisetuengei/Cucumber-QR-POS/main/sample/sample2.jpg"
+
+FONT_PATHS = [
+    "arialbd.ttf", "arial.ttf",
+    "DejaVuSans-Bold.ttf", "DejaVuSans.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+    "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf"
+]
+
 st.set_page_config(page_title="管理＆判定システム", layout="wide")
 conn = st.connection("gsheets", type=GSheetsConnection)
 
-def load_settings():
+# ==========================================
+# 🌟 ヘルパー関数 (ユーティリティ & データベース)
+# ==========================================
+def load_settings() -> dict:
+    """設定情報をスプレッドシートまたはデフォルト値からロード"""
     for attempt in range(3):
         try:
             df = conn.read(worksheet="Settings", ttl=0, dtype=str)
@@ -43,26 +71,8 @@ def load_settings():
                     pass
                 return default_settings
 
-if "settings" not in st.session_state:
-    st.session_state.settings = load_settings()
-
-if "grade_result" not in st.session_state:
-    st.session_state.grade_result = None
-if "processed_qrs" not in st.session_state:
-    st.session_state.processed_qrs = set()
-if "last_scanned_tag" not in st.session_state:
-    st.session_state.last_scanned_tag = None
-
-def clear_grade_result():
-    st.session_state.grade_result = None
-
-c_name = st.session_state.settings.get("crop_name", "キュウリ")
-c_emoji = st.session_state.settings.get("emoji", "🥒")
-
-# ==========================================
-# 🌟 通知音・振動機能 (JavaScript)
-# ==========================================
 def play_notification_sound():
+    """読み取り通知音・振動をJavaScriptで再生"""
     js_code = """
     <script>
     try {
@@ -83,13 +93,8 @@ def play_notification_sound():
     """
     components.html(js_code, height=0, width=0)
 
-# ==========================================
-# 🌟 GitHub サンプル画像のURL設定
-# ==========================================
-SAMPLE1_URL = "https://raw.githubusercontent.com//yasaibusisetuengei/Cucumber-QR-POS/main/sample/sample1.png"
-SAMPLE2_URL = "https://raw.githubusercontent.com//yasaibusisetuengei/Cucumber-QR-POS/main/sample/sample2.jpg"
-
-def get_image_bytes_from_url(url):
+def get_image_bytes_from_url(url: str):
+    """URLから画像バイトデータを取得"""
     try:
         req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
         with urllib.request.urlopen(req) as response:
@@ -98,24 +103,6 @@ def get_image_bytes_from_url(url):
         st.error(f"サンプル画像の読み込みに失敗しました: {e}")
         return None
 
-# ==========================================
-# 1. 階級判定用の定数設定
-# ==========================================
-A4_W_MM, A4_H_MM = 297.0, 210.0
-PPM = 3.0
-A4_W_PX, A4_H_PX = int(A4_W_MM * PPM), int(A4_H_MM * PPM)
-MARKER_OFFSET_MM = 15.0
-OFFSET_PX = int(MARKER_OFFSET_MM * PPM)
-DIST_5CM_PX = 50.0 * PPM
-
-COLOR_CONTOUR = (0, 255, 0)
-COLOR_TABLE_LINE = (255, 255, 0)
-COLOR_CURVE_LINE = (255, 0, 0)
-COLOR_THICKNESS = (255, 0, 255)
-
-# ==========================================
-# 2. データベース操作関数
-# ==========================================
 def load_tags():
     for attempt in range(3):
         try:
@@ -220,7 +207,6 @@ def read_qr_from_bytes(file_bytes):
     data, _, _ = detector.detectAndDecode(img)
     return str(data).strip() if data else None
 
-# 🌟 画像保存ボタン用コールバック関数（押下時に同期）
 def sync_record_image(item_code, filename, file_bytes):
     code = item_code
     if not code and file_bytes is not None:
@@ -235,7 +221,6 @@ def sync_grade_image(item_code, filename, file_bytes):
     code = item_code
     if not code and file_bytes is not None:
         tag_id = read_qr_from_bytes(file_bytes)
-        # 修正: 台形補正してからQRを読み取るフォールバック処理を追加
         if not tag_id:
             img = cv2.imdecode(file_bytes, 1)
             if img is not None:
@@ -251,10 +236,10 @@ def sync_grade_image(item_code, filename, file_bytes):
         update_item_record(code, grade_image=filename)
         st.toast(f"📱 画像名「{filename}」を grade_image 列に反映しました！")
     elif not code:
-        st.toast("⚠️ QRコードが検出できなかったため、画像名の保存は保留されました。判定実行時に登録されます。")
+        st.toast("⚠️ QRコードが検出できなかったため、画像名の保存は保留されました。")
 
 # ==========================================
-# 3. OpenCV 画像処理・計測関数
+# 🌟 OpenCV 画像処理・計測関数
 # ==========================================
 def detect_and_warp(image: np.ndarray):
     aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
@@ -280,14 +265,14 @@ def detect_and_warp(image: np.ndarray):
     warped = cv2.warpPerspective(image, M, (A4_W_PX, A4_H_PX))
     return warped, None
 
-def extract_cucumber_contour(warped_img: np.ndarray):
+def extract_cucumber_contour(warped_img: np.ndarray, crop_name: str = "作物"):
     hsv = cv2.cvtColor(warped_img, cv2.COLOR_RGB2HSV)
     lower_green, upper_green = np.array([35, 40, 40]), np.array([85, 255, 255])
     mask = cv2.inRange(hsv, lower_green, upper_green)
     kernel = np.ones((5, 5), np.uint8)
     mask = cv2.morphologyEx(cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel), cv2.MORPH_CLOSE, kernel)
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    if not contours: return None, f"{c_name}が検出できません。"
+    if not contours: return None, f"{crop_name}が検出できません。"
     return max(contours, key=cv2.contourArea), None
 
 def calculate_length(contour):
@@ -363,11 +348,11 @@ def draw_results(warped, contour, ds, de, cp, foot, hp1, hp2, tp1, tp2):
     if tp1 is not None and tp2 is not None: cv2.line(res, tuple(tp1.astype(int)), tuple(tp2.astype(int)), COLOR_THICKNESS, 3)
     return res
 
-def process_measurement(image):
+def process_measurement(image, crop_name="キュウリ"):
     if image is None: return None, "画像がありません", None, None, None, None, None
     warped, err = detect_and_warp(image)
     if err: return image, f"<h3 style='color:red;'>{err}</h3>", None, None, None, None, None
-    contour, err = extract_cucumber_contour(warped)
+    contour, err = extract_cucumber_contour(warped, crop_name)
     if err: return warped, f"<h3 style='color:red;'>{err}</h3>", None, None, None, None, None
     
     length_cm, end1, end2 = calculate_length(contour)
@@ -394,7 +379,151 @@ def process_measurement(image):
     return res_img, html, length_cm, avg_thick_cm, curve_cm, display_grade, warped
 
 # ==========================================
-# 4. Streamlit UI 構成 (3つのタブ)
+# 🌟 PDF生成用ヘルパー関数 (修正箇所)
+# ==========================================
+def get_large_font(size_px: int):
+    """システムフォントを安全に検索して取得"""
+    for path in FONT_PATHS:
+        try:
+            return ImageFont.truetype(path, size_px)
+        except IOError:
+            continue
+    return None
+
+def generate_qr_pdf(qr_start: int, qr_end: int, qr_size_mm: int) -> bytes:
+    """印刷用両面QRコードシート(PDF)を生成"""
+    dpi = 300
+    mm_to_px = dpi / 25.4
+    a4_w_px, a4_h_px = int(210 * mm_to_px), int(297 * mm_to_px)
+    qr_size_px = int(qr_size_mm * mm_to_px)
+    margin_px = int(10 * mm_to_px)
+    
+    top_padding = int(15 * mm_to_px)
+    bottom_padding = int(5 * mm_to_px)
+    tag_w_px = qr_size_px + int(10 * mm_to_px)
+    tag_h_px = qr_size_px + top_padding + bottom_padding
+    
+    usable_w = a4_w_px - margin_px * 2
+    usable_h = a4_h_px - margin_px * 2
+    cols = usable_w // tag_w_px
+    rows = usable_h // tag_h_px
+    
+    if cols == 0 or rows == 0:
+        return None
+
+    pages = []
+    page_data = []
+    
+    # 🎯 修正: フォントサイズを「QRコードサイズの10%」に指定 (最小10px)
+    font_size = max(10, int(qr_size_px * 0.10))
+    font = get_large_font(font_size)
+    default_font = ImageFont.load_default()
+
+    x_idx, y_idx = 0, 0
+    for i in range(qr_start, qr_end + 1):
+        tag_str = str(i)
+        qr = qrcode.QRCode(
+            version=1,
+            error_correction=qrcode.constants.ERROR_CORRECT_H, 
+            box_size=10,
+            border=4,
+        )
+        qr.add_data(tag_str)
+        qr.make(fit=True)
+        qr_img = qr.make_image(fill_color="black", back_color="white").convert("RGB")
+        qr_img = qr_img.resize((qr_size_px, qr_size_px))
+        
+        page_data.append({'x_idx': x_idx, 'y_idx': y_idx, 'tag_str': tag_str, 'qr_img': qr_img})
+        
+        x_idx += 1
+        if x_idx >= cols:
+            x_idx = 0
+            y_idx += 1
+            
+        if y_idx >= rows or i == qr_end:
+            front_page = Image.new("RGB", (a4_w_px, a4_h_px), "white")
+            back_page = Image.new("RGB", (a4_w_px, a4_h_px), "white")
+            draw_front = ImageDraw.Draw(front_page)
+            draw_back = ImageDraw.Draw(back_page)
+            
+            for item in page_data:
+                # --- 表面 ---
+                fx = margin_px + item['x_idx'] * tag_w_px + int(5 * mm_to_px)
+                fy = margin_px + item['y_idx'] * tag_h_px + top_padding
+                front_page.paste(item['qr_img'], (fx, fy))
+                draw_front.rectangle([fx - int(5 * mm_to_px), fy - top_padding, fx + qr_size_px + int(5 * mm_to_px), fy + qr_size_px + bottom_padding], outline="gray")
+                draw_front.ellipse([fx + qr_size_px//2 - 10, fy - top_padding + 10, fx + qr_size_px//2 + 10, fy - top_padding + 30], outline="black")
+                
+                # --- 裏面 (長辺とじ両面印刷対応のため左右反転) ---
+                bx_idx = cols - 1 - item['x_idx']
+                bx = margin_px + bx_idx * tag_w_px + int(5 * mm_to_px)
+                by = margin_px + item['y_idx'] * tag_h_px + top_padding
+                draw_back.rectangle([bx - int(5 * mm_to_px), by - top_padding, bx + qr_size_px + int(5 * mm_to_px), by + qr_size_px + bottom_padding], outline="gray")
+                draw_back.ellipse([bx + qr_size_px//2 - 10, by - top_padding + 10, bx + qr_size_px//2 + 10, by - top_padding + 30], outline="black")
+                
+                # 🎯 裏面文字の精密描画 (中央配置)
+                if font:
+                    try:
+                        text_bbox = draw_back.textbbox((0, 0), item['tag_str'], font=font)
+                        text_w = text_bbox[2] - text_bbox[0]
+                        text_h = text_bbox[3] - text_bbox[1]
+                    except AttributeError:
+                        text_w, text_h = draw_back.textsize(item['tag_str'], font=font)
+                    
+                    text_x = bx + (qr_size_px - text_w) // 2
+                    text_y = by + (qr_size_px - text_h) // 2
+                    draw_back.text((text_x, text_y), item['tag_str'], fill="black", font=font)
+                else:
+                    try:
+                        bbox = draw_back.textbbox((0, 0), item['tag_str'], font=default_font)
+                        w = bbox[2] - bbox[0]
+                        h = bbox[3] - bbox[1]
+                    except Exception:
+                        w, h = draw_back.textsize(item['tag_str'], font=default_font)
+                    
+                    if w > 0 and h > 0:
+                        scale = font_size / max(h, 1)
+                        temp_w, temp_h = int(w * scale), int(h * scale)
+                        txt_img = Image.new("RGBA", (w, h), (255, 255, 255, 0))
+                        txt_draw = ImageDraw.Draw(txt_img)
+                        txt_draw.text((0, 0), item['tag_str'], font=default_font, fill="black")
+                        txt_img = txt_img.resize((temp_w, temp_h), Image.Resampling.BILINEAR)
+                        
+                        text_x = bx + (qr_size_px - temp_w) // 2
+                        text_y = by + (qr_size_px - temp_h) // 2
+                        back_page.paste(txt_img, (text_x, text_y), txt_img)
+            
+            pages.append(front_page)
+            pages.append(back_page)
+            
+            page_data = []
+            x_idx, y_idx = 0, 0
+
+    pdf_bytes = BytesIO()
+    pages[0].save(pdf_bytes, format="PDF", save_all=True, append_images=pages[1:])
+    return pdf_bytes.getvalue()
+
+# ==========================================
+# 🌟 アプリケーション セッション初期化
+# ==========================================
+if "settings" not in st.session_state:
+    st.session_state.settings = load_settings()
+
+if "grade_result" not in st.session_state:
+    st.session_state.grade_result = None
+if "processed_qrs" not in st.session_state:
+    st.session_state.processed_qrs = set()
+if "last_scanned_tag" not in st.session_state:
+    st.session_state.last_scanned_tag = None
+
+def clear_grade_result():
+    st.session_state.grade_result = None
+
+c_name = st.session_state.settings.get("crop_name", "キュウリ")
+c_emoji = st.session_state.settings.get("emoji", "🥒")
+
+# ==========================================
+# 🌟 Streamlit UI 構成 (3つのタブ)
 # ==========================================
 tab1, tab2, tab3 = st.tabs(["🌱 生育記録", f"{c_emoji} 収穫・階級判定", "⚙️ 初期設定"])
 
@@ -413,15 +542,11 @@ with tab1:
                 st.session_state.record_img_filename = f"scan_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg"
                 st.session_state.temp_record_bytes = qr_img.getvalue()
 
-        # 修正: session_stateに画像があればダウンロードボタンを表示し続けることで再レンダリングによる消失を防止
         if "temp_record_bytes" in st.session_state and st.session_state.temp_record_bytes:
             file_bytes_qr = np.asarray(bytearray(st.session_state.temp_record_bytes), dtype=np.uint8)
-            
-            # QRコードの即時特定
             cam_tag = read_qr_from_bytes(file_bytes_qr)
             cam_item_code = get_tag_info(cam_tag) if cam_tag else None
             
-            # 💾 ダウンロードボタン押下時にスプレッドシートへ同期
             st.download_button(
                 label="💾 撮影画像をスマホに保存",
                 data=st.session_state.temp_record_bytes,
@@ -472,13 +597,12 @@ with tab1:
             def parse_date(d_str):
                 if d_str:
                     try: return pd.to_datetime(d_str).date()
-                    except: pass
+                    except Exception: pass
                 return None
 
             date_count = int(st.session_state.settings.get("date_count", 3))
             today_str = datetime.date.today().strftime("%Y-%m-%d")
             
-            # --- 自動更新ロジック ---
             if tag_id not in st.session_state.processed_qrs:
                 already_scanned = False
                 for i in range(1, date_count + 1):
@@ -562,15 +686,11 @@ with tab2:
                     st.session_state.grade_img_filename = f"grade_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg"
                     st.session_state.temp_grade_bytes = c_img.getvalue()
 
-            # 修正: session_stateに画像があればダウンロードボタンを表示し続けることで再レンダリングによる消失を防止
             if "temp_grade_bytes" in st.session_state and st.session_state.temp_grade_bytes:
                 file_bytes_grade = np.asarray(bytearray(st.session_state.temp_grade_bytes), dtype=np.uint8)
-                
-                # QRコードの即時特定（読めない場合は後のsync_grade_image内で台形補正して再試行）
                 cam_tag_g = read_qr_from_bytes(file_bytes_grade)
                 cam_item_code_g = get_tag_info(cam_tag_g) if cam_tag_g else None
                 
-                # 💾 ダウンロードボタン押下時にスプレッドシートへ同期
                 st.download_button(
                     label="💾 撮影画像をスマホに保存",
                     data=st.session_state.temp_grade_bytes,
@@ -603,7 +723,7 @@ with tab2:
         if grade_btn and file_bytes_grade is not None:
             cv_img = cv2.imdecode(file_bytes_grade, 1)
             cv_img_rgb = cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB)
-            res_img, html, l_cm, t_cm, c_cm, grade_str, warped = process_measurement(cv_img_rgb)
+            res_img, html, l_cm, t_cm, c_cm, grade_str, warped = process_measurement(cv_img_rgb, c_name)
             
             tag_id = None
             if l_cm is not None:
@@ -660,7 +780,7 @@ with tab2:
                 if unbind_tag(unbind_target_tag):
                     st.success(f"タグ【{unbind_target_tag}】のリンクを解除しました！")
                 else:
-                    st.warning(f"タグが見つからないか、すでに解除されています。")
+                    st.warning("タグが見つからないか、すでに解除されています。")
             else:
                 st.error("タグ番号を入力してください。")
 
@@ -718,136 +838,13 @@ with tab3:
         
     if st.button("📄 QRコードシートを作成", type="primary"):
         with st.spinner("PDFを生成中..."):
-            dpi = 300
-            mm_to_px = dpi / 25.4
-            a4_w_px, a4_h_px = int(210 * mm_to_px), int(297 * mm_to_px)
-            qr_size_px = int(qr_size * mm_to_px)
-            margin_px = int(10 * mm_to_px)
-            
-            top_padding = int(15 * mm_to_px)
-            bottom_padding = int(5 * mm_to_px)
-            tag_w_px = qr_size_px + int(10 * mm_to_px)
-            tag_h_px = qr_size_px + top_padding + bottom_padding
-            
-            usable_w = a4_w_px - margin_px * 2
-            usable_h = a4_h_px - margin_px * 2
-            cols = usable_w // tag_w_px
-            rows = usable_h // tag_h_px
-            
-            if cols == 0 or rows == 0:
+            pdf_data = generate_qr_pdf(qr_start, qr_end, qr_size)
+            if pdf_data is None:
                 st.error("指定されたQRコードサイズが大きすぎてA4に配置できません。サイズを小さくしてください。")
             else:
-                pages = []
-                page_data = []
-                
-                def get_large_font(size_px):
-                    font_paths = [
-                        "arialbd.ttf", "arial.ttf", 
-                        "DejaVuSans-Bold.ttf", "DejaVuSans.ttf",
-                        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-                        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-                        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
-                        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
-                        "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf"
-                    ]
-                    for path in font_paths:
-                        try:
-                            return ImageFont.truetype(path, size_px)
-                        except IOError:
-                            continue
-                    return None
-                
-                # 🛠️ 修正: 裏面文字フォントサイズを「QRコードの25%」に変更しはみ出しを防止
-                font_size = int(qr_size_px * 0.25)
-                font = get_large_font(font_size)
-                default_font = ImageFont.load_default()
-                
-                x_idx, y_idx = 0, 0
-                for i in range(qr_start, qr_end + 1):
-                    tag_str = str(i)
-                    qr = qrcode.QRCode(
-                        version=1,
-                        error_correction=qrcode.constants.ERROR_CORRECT_H, 
-                        box_size=10,
-                        border=4,
-                    )
-                    qr.add_data(tag_str)
-                    qr.make(fit=True)
-                    qr_img = qr.make_image(fill_color="black", back_color="white").convert("RGB")
-                    qr_img = qr_img.resize((qr_size_px, qr_size_px))
-                    
-                    page_data.append({'x_idx': x_idx, 'y_idx': y_idx, 'tag_str': tag_str, 'qr_img': qr_img})
-                    
-                    x_idx += 1
-                    if x_idx >= cols:
-                        x_idx = 0
-                        y_idx += 1
-                        
-                    if y_idx >= rows or i == qr_end:
-                        front_page = Image.new("RGB", (a4_w_px, a4_h_px), "white")
-                        back_page = Image.new("RGB", (a4_w_px, a4_h_px), "white")
-                        draw_front = ImageDraw.Draw(front_page)
-                        draw_back = ImageDraw.Draw(back_page)
-                        
-                        for item in page_data:
-                            # --- 表面 ---
-                            fx = margin_px + item['x_idx'] * tag_w_px + int(5 * mm_to_px)
-                            fy = margin_px + item['y_idx'] * tag_h_px + top_padding
-                            front_page.paste(item['qr_img'], (fx, fy))
-                            draw_front.rectangle([fx - int(5 * mm_to_px), fy - top_padding, fx + qr_size_px + int(5 * mm_to_px), fy + qr_size_px + bottom_padding], outline="gray")
-                            draw_front.ellipse([fx + qr_size_px//2 - 10, fy - top_padding + 10, fx + qr_size_px//2 + 10, fy - top_padding + 30], outline="black")
-                            
-                            # --- 裏面 ---
-                            bx_idx = cols - 1 - item['x_idx']
-                            bx = margin_px + bx_idx * tag_w_px + int(5 * mm_to_px)
-                            by = margin_px + item['y_idx'] * tag_h_px + top_padding
-                            draw_back.rectangle([bx - int(5 * mm_to_px), by - top_padding, bx + qr_size_px + int(5 * mm_to_px), by + qr_size_px + bottom_padding], outline="gray")
-                            draw_back.ellipse([bx + qr_size_px//2 - 10, by - top_padding + 10, bx + qr_size_px//2 + 10, by - top_padding + 30], outline="black")
-                            
-                            # 🛠️ 綺麗な滑らかさで文字を描画
-                            if font:
-                                try:
-                                    text_bbox = draw_back.textbbox((0, 0), item['tag_str'], font=font)
-                                    text_w = text_bbox[2] - text_bbox[0]
-                                    text_h = text_bbox[3] - text_bbox[1]
-                                except AttributeError:
-                                    text_w, text_h = draw_back.textsize(item['tag_str'], font=font)
-                                
-                                text_x = bx + (qr_size_px - text_w) // 2
-                                text_y = by + (qr_size_px - text_h) // 2
-                                draw_back.text((text_x, text_y), item['tag_str'], fill="black", font=font)
-                            else:
-                                try:
-                                    bbox = draw_back.textbbox((0, 0), item['tag_str'], font=default_font)
-                                    w = bbox[2] - bbox[0]
-                                    h = bbox[3] - bbox[1]
-                                except:
-                                    w, h = draw_back.textsize(item['tag_str'], font=default_font)
-                                
-                                if w > 0 and h > 0:
-                                    scale = font_size / max(h, 1)
-                                    temp_w, temp_h = int(w * scale), int(h * scale)
-                                    txt_img = Image.new("RGBA", (w, h), (255, 255, 255, 0))
-                                    txt_draw = ImageDraw.Draw(txt_img)
-                                    txt_draw.text((0, 0), item['tag_str'], font=default_font, fill="black")
-                                    txt_img = txt_img.resize((temp_w, temp_h), Image.Resampling.BILINEAR)
-                                    
-                                    text_x = bx + (qr_size_px - temp_w) // 2
-                                    text_y = by + (qr_size_px - temp_h) // 2
-                                    back_page.paste(txt_img, (text_x, text_y), txt_img)
-                        
-                        pages.append(front_page)
-                        pages.append(back_page)
-                        
-                        page_data = []
-                        x_idx, y_idx = 0, 0
-                
-                pdf_bytes = BytesIO()
-                pages[0].save(pdf_bytes, format="PDF", save_all=True, append_images=pages[1:])
-                
                 st.download_button(
                     label="📥 作成した両面QRコードシート(PDF)をダウンロード",
-                    data=pdf_bytes.getvalue(),
+                    data=pdf_data,
                     file_name=f"qr_tags_{qr_start}_to_{qr_end}_duplex.pdf",
                     mime="application/pdf"
                 )
