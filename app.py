@@ -49,19 +49,20 @@ FONT_PATHS = [
 
 st.set_page_config(page_title="管理＆判定システム", layout="wide")
 
-# 修正条件②: カメラ表示画面を大きく拡大し、スマホ向けに縦画面表示にするスタイル定義
 st.markdown("""
     <style>
-    [data-testid="stCameraInput"] video {
+    /* カメラ入力コンテナ全体を最大幅に */
+    [data-testid="stCameraInput"] {
+        width: 100% !important;
+    }
+    /* 撮影前(video)と撮影後(img)のスタイルを統一 */
+    [data-testid="stCameraInput"] video,
+    [data-testid="stCameraInput"] img {
         width: 100% !important;
         max-width: 100% !important;
         height: auto !important;
-        max-height: 75vh !important;
-        aspect-ratio: 3 / 4 !important; /* スマホ縦画面向けの比率 */
-        object-fit: cover !important;   /* 枠に合わせて縦画面表示に切り取り */
-    }
-    [data-testid="stCameraInput"] {
-        width: 100% !important;
+        max-height: 85vh !important; /* スマホ画面の高さの85%まで広げる */
+        object-fit: contain !important; /* 拡大・切り取りをせず、全体を枠内に収めて表示 */
     }
     </style>
 """, unsafe_allow_html=True)
