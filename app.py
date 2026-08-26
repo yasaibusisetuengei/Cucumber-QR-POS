@@ -26,6 +26,15 @@ COLOR_TABLE_LINE = (255, 255, 0)
 COLOR_CURVE_LINE = (255, 0, 0)
 COLOR_THICKNESS = (255, 0, 255)
 
+# 作物マスター定義（選択肢と絵文字）
+CROP_OPTIONS = {
+    "キュウリ": "🥒",
+    "トマト": "🍅",
+    "ナス": "🍆",
+    "イチゴ": "🍓",
+    "パプリカ": "🫑"
+}
+
 SAMPLE1_URL = "https://raw.githubusercontent.com//yasaibusisetuengei/Cucumber-QR-POS/main/sample/sample1.png"
 SAMPLE2_URL = "https://raw.githubusercontent.com//yasaibusisetuengei/Cucumber-QR-POS/main/sample/sample2.jpg"
 
@@ -40,6 +49,23 @@ FONT_PATHS = [
 ]
 
 st.set_page_config(page_title="管理＆判定システム", layout="wide")
+
+# 条件③: カメラ表示画面を大きく拡大するスタイル定義
+st.markdown("""
+    <style>
+    [data-testid="stCameraInput"] video {
+        width: 100% !important;
+        max-width: 100% !important;
+        height: auto !important;
+        max-height: 75vh !important;
+        object-fit: contain !important;
+    }
+    [data-testid="stCameraInput"] {
+        width: 100% !important;
+    }
+    </style>
+""", unsafe_allow_html=True)
+
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 # ==========================================
@@ -137,6 +163,7 @@ def get_tag_info(tag_id):
         if code != "": return str(code)
     return None
 
+# 条件②対応: record_image を廃止し date_1_image ～ date_10_image を定義
 def register_new_item(tag_id):
     tags_df = load_tags()
     items_df = load_items()
@@ -157,11 +184,12 @@ def register_new_item(tag_id):
         'item_code': [item_code], 'weight': [0.0],
         'area_number': ["1"], 'comment': [""], 'grade': [""], 
         'length': [0.0], 'thickness': [0.0], 'curve': [0.0],
-        'record_image': [""], 'grade_image': [""]
+        'grade_image': [""]
     }
-    date_count = int(st.session_state.settings.get("date_count", 3))
-    for i in range(1, date_count + 1):
+    
+    for i in range(1, 11):
         new_item[f'date_{i}'] = [""]
+        new_item[f'date_{i}_image'] = [""]
         
     new_item_df = pd.DataFrame(new_item)
     items_df = pd.concat([items_df, new_item_df], ignore_index=True)
@@ -207,15 +235,17 @@ def read_qr_from_bytes(file_bytes):
     data, _, _ = detector.detectAndDecode(img)
     return str(data).strip() if data else None
 
-def sync_record_image(item_code, filename, file_bytes):
+# 条件②対応: date_1_image 等の対象列に反映
+def sync_record_image(item_code, filename, file_bytes, target_date_idx=1):
     code = item_code
     if not code and file_bytes is not None:
         tag_id = read_qr_from_bytes(file_bytes)
         if tag_id:
             code = get_tag_info(tag_id) or register_new_item(tag_id)
     if code and filename:
-        update_item_record(code, record_image=filename)
-        st.toast(f"📱 画像名「{filename}」を record_image 列に反映しました！")
+        col_name = f"date_{target_date_idx}_image"
+        update_item_record(code, **{col_name: filename})
+        st.toast(f"📱 画像名「{filename}」を {col_name} 列に反映しました！")
 
 def sync_grade_image(item_code, filename, file_bytes):
     code = item_code
@@ -367,7 +397,7 @@ def process_measurement(image, crop_name="キュウリ"):
     res_img = draw_results(warped, contour, ds, de, cp, foot, hp1, hp2, tp1, tp2)
     html = f"""
     <div style="background-color: #ffffff; padding: 20px; border-radius: 12px; border: 1px solid #e0e0e0; color: black;">
-        <h3 style="text-align: center; margin-top: 0; color: #2e7d32;">📐 計測・判定結果</h3>
+        <h3 style="text-align: center; margin-top: 0; color: #2e7d32;">📐 計測・判定結果 ({crop_name})</h3>
         <p>📏 <b>長さ:</b> {length_cm:.1f} cm</p>
         <p>⭕ <b>太さ:</b> {avg_thick_cm:.1f} cm</p>
         <p>〰️ <b>曲がり:</b> {curve_cm:.1f} cm</p>
@@ -379,32 +409,23 @@ def process_measurement(image, crop_name="キュウリ"):
     return res_img, html, length_cm, avg_thick_cm, curve_cm, display_grade, warped
 
 # ==========================================
-# 🌟 PDF生成用ヘルパー関数 (修正箇所)
+# 🌟 PDF生成用ヘルパー関数
 # ==========================================
 def get_large_font(font_size: int):
-    """OS共通のTrueTypeフォントを読み込み（解像度崩れを防止）"""
     font_targets = [
-        "arial.ttf",
-        "DejaVuSans.ttf",
-        "Helvetica.ttc",
-        "msgothic.ttc",
+        "arial.ttf", "DejaVuSans.ttf", "Helvetica.ttc", "msgothic.ttc"
     ]
     for font_name in font_targets:
         try:
             return ImageFont.truetype(font_name, font_size)
         except IOError:
             continue
-
-    # Pillow 10.1.0以降であれば size 引数が利用可能
     try:
         return ImageFont.load_default(size=font_size)
     except TypeError:
         return ImageFont.load_default()
 
-
-def generate_qr_pdf(
-    qr_start: int, qr_end: int, qr_size_mm: int
-) -> bytes | None:
+def generate_qr_pdf(qr_start: int, qr_end: int, qr_size_mm: int) -> bytes | None:
     dpi = 300
     mm_to_px = dpi / 25.4
     a4_w_px, a4_h_px = int(210 * mm_to_px), int(297 * mm_to_px)
@@ -441,19 +462,12 @@ def generate_qr_pdf(
         )
         qr.add_data(tag_str)
         qr.make(fit=True)
-        qr_img = qr.make_image(fill_color="black", back_color="white").convert(
-            "RGB"
-        )
+        qr_img = qr.make_image(fill_color="black", back_color="white").convert("RGB")
         qr_img = qr_img.resize((qr_size_px, qr_size_px))
 
-        page_data.append(
-            {
-                "x_idx": x_idx,
-                "y_idx": y_idx,
-                "tag_str": tag_str,
-                "qr_img": qr_img,
-            }
-        )
+        page_data.append({
+            "x_idx": x_idx, "y_idx": y_idx, "tag_str": tag_str, "qr_img": qr_img
+        })
 
         x_idx += 1
         if x_idx >= cols:
@@ -467,73 +481,41 @@ def generate_qr_pdf(
             draw_back = ImageDraw.Draw(back_page)
 
             for item in page_data:
-                # --- 表面 ---
                 fx = margin_px + item["x_idx"] * tag_w_px + int(5 * mm_to_px)
                 fy = margin_px + item["y_idx"] * tag_h_px + top_padding
                 front_page.paste(item["qr_img"], (fx, fy))
-                draw_front.rectangle(
-                    [
-                        fx - int(5 * mm_to_px),
-                        fy - top_padding,
-                        fx + qr_size_px + int(5 * mm_to_px),
-                        fy + qr_size_px + bottom_padding,
-                    ],
-                    outline="gray",
-                )
-                draw_front.ellipse(
-                    [
-                        fx + qr_size_px // 2 - 10,
-                        fy - top_padding + 10,
-                        fx + qr_size_px // 2 + 10,
-                        fy - top_padding + 30,
-                    ],
-                    outline="black",
-                )
+                draw_front.rectangle([
+                    fx - int(5 * mm_to_px), fy - top_padding,
+                    fx + qr_size_px + int(5 * mm_to_px), fy + qr_size_px + bottom_padding
+                ], outline="gray")
+                draw_front.ellipse([
+                    fx + qr_size_px // 2 - 10, fy - top_padding + 10,
+                    fx + qr_size_px // 2 + 10, fy - top_padding + 30
+                ], outline="black")
 
-                # --- 裏面 ---
                 bx_idx = cols - 1 - item["x_idx"]
                 bx = margin_px + bx_idx * tag_w_px + int(5 * mm_to_px)
                 by = margin_px + item["y_idx"] * tag_h_px + top_padding
-                draw_back.rectangle(
-                    [
-                        bx - int(5 * mm_to_px),
-                        by - top_padding,
-                        bx + qr_size_px + int(5 * mm_to_px),
-                        by + qr_size_px + bottom_padding,
-                    ],
-                    outline="gray",
-                )
-                draw_back.ellipse(
-                    [
-                        bx + qr_size_px // 2 - 10,
-                        by - top_padding + 10,
-                        bx + qr_size_px // 2 + 10,
-                        by - top_padding + 30,
-                    ],
-                    outline="black",
-                )
+                draw_back.rectangle([
+                    bx - int(5 * mm_to_px), by - top_padding,
+                    bx + qr_size_px + int(5 * mm_to_px), by + qr_size_px + bottom_padding
+                ], outline="gray")
+                draw_back.ellipse([
+                    bx + qr_size_px // 2 - 10, by - top_padding + 10,
+                    bx + qr_size_px // 2 + 10, by - top_padding + 30
+                ], outline="black")
 
-                # 🎯 裏面文字の精密描画（アンカー指定で拡大・切れを完全防止）
                 center_x = bx + qr_size_px // 2
                 center_y = by + qr_size_px // 2
-                draw_back.text(
-                    (center_x, center_y),
-                    item["tag_str"],
-                    fill="black",
-                    font=font,
-                    anchor="mm",
-                )
+                draw_back.text((center_x, center_y), item["tag_str"], fill="black", font=font, anchor="mm")
 
             pages.append(front_page)
             pages.append(back_page)
-
             page_data = []
             x_idx, y_idx = 0, 0
 
     pdf_bytes = BytesIO()
-    pages[0].save(
-        pdf_bytes, format="PDF", save_all=True, append_images=pages[1:]
-    )
+    pages[0].save(pdf_bytes, format="PDF", save_all=True, append_images=pages[1:])
     return pdf_bytes.getvalue()
 
 # ==========================================
@@ -587,7 +569,7 @@ with tab1:
                 mime="image/jpeg",
                 key="dl_cam_qr",
                 on_click=sync_record_image,
-                args=(cam_item_code, st.session_state.record_img_filename, file_bytes_qr)
+                args=(cam_item_code, st.session_state.record_img_filename, file_bytes_qr, 1)
             )
             
     elif img_source_qr == "アップロード":
@@ -636,6 +618,7 @@ with tab1:
             date_count = int(st.session_state.settings.get("date_count", 3))
             today_str = datetime.date.today().strftime("%Y-%m-%d")
             
+            # 条件②対応: 本日日付に対応する date_{i}_image に画像保存
             if tag_id not in st.session_state.processed_qrs:
                 already_scanned = False
                 for i in range(1, date_count + 1):
@@ -648,16 +631,18 @@ with tab1:
                 else:
                     update_kwargs = {}
                     updated = False
+                    target_idx = 1
                     for i in range(1, date_count + 1):
                         if not clean_date_str(item_data.get(f'date_{i}', '')):
                             update_kwargs[f'date_{i}'] = today_str
+                            update_kwargs[f'date_{i}_image'] = st.session_state.get('record_img_filename', '')
                             updated = True
+                            target_idx = i
                             break
                     
                     if updated:
-                        update_kwargs['record_image'] = st.session_state.get('record_img_filename', '')
                         update_item_record(item_code, **update_kwargs)
-                        st.success(f"🌱 スキャンを検知し、自動でデータベースを更新しました！ (画像名: {update_kwargs['record_image']})")
+                        st.success(f"🌱 スキャンを検知し、自動でデータベースを更新しました！ (画像名: {update_kwargs[f'date_{target_idx}_image']})")
                         match = load_items().query(f"item_code == '{item_code}'")
                         item_data = match.iloc[0].to_dict() if not match.empty else {}
                 st.session_state.processed_qrs.add(tag_id)
@@ -691,14 +676,17 @@ with tab1:
             
             if st.button("💾 記録をまとめて更新する", type="primary", use_container_width=True):
                 update_kwargs = {'area_number': str(new_area), 'comment': str(new_comment)}
-                update_kwargs['record_image'] = st.session_state.get('record_img_filename', '')
                 
+                # 条件②対応: 入力された各日付に応じて date_i_image も併せて保存
                 for i in range(date_count):
                     val = st.session_state[f"d{i+1}_{item_code}"]
-                    update_kwargs[f"date_{i+1}"] = val.strftime("%Y-%m-%d") if val else ""
+                    d_str = val.strftime("%Y-%m-%d") if val else ""
+                    update_kwargs[f"date_{i+1}"] = d_str
+                    if d_str and st.session_state.get('record_img_filename'):
+                        update_kwargs[f"date_{i+1}_image"] = st.session_state.get('record_img_filename', '')
                 
                 update_item_record(item_code, **update_kwargs)
-                st.success(f"✅ アイテム【{item_code}】の記録を更新しました！ (画像名: {update_kwargs['record_image']})")
+                st.success(f"✅ アイテム【{item_code}】の記録を更新しました！")
                 
         else:
             st.error("QRコードを検出できませんでした。再撮影してください。")
@@ -754,23 +742,27 @@ with tab2:
 
     with col2:
         if grade_btn and file_bytes_grade is not None:
-            cv_img = cv2.imdecode(file_bytes_grade, 1)
-            cv_img_rgb = cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB)
-            res_img, html, l_cm, t_cm, c_cm, grade_str, warped = process_measurement(cv_img_rgb, c_name)
-            
-            tag_id = None
-            if l_cm is not None:
-                tag_id = read_qr_from_bytes(file_bytes_grade)
-                if not tag_id and warped is not None:
-                    detector = cv2.QRCodeDetector()
-                    warped_bgr = cv2.cvtColor(warped, cv2.RGB2BGR)
-                    data, _, _ = detector.detectAndDecode(warped_bgr)
-                    tag_id = str(data).strip() if data else None
-            
-            st.session_state.grade_result = {
-                'res_img': res_img, 'html': html, 'l_cm': l_cm, 't_cm': t_cm,
-                'c_cm': c_cm, 'grade_str': grade_str, 'tag_id': tag_id
-            }
+            # 条件①対応: 将来的な他作物（トマト・ナス等）判定ロジックへの分岐
+            if c_name == "キュウリ":
+                cv_img = cv2.imdecode(file_bytes_grade, 1)
+                cv_img_rgb = cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB)
+                res_img, html, l_cm, t_cm, c_cm, grade_str, warped = process_measurement(cv_img_rgb, c_name)
+                
+                tag_id = None
+                if l_cm is not None:
+                    tag_id = read_qr_from_bytes(file_bytes_grade)
+                    if not tag_id and warped is not None:
+                        detector = cv2.QRCodeDetector()
+                        warped_bgr = cv2.cvtColor(warped, cv2.RGB2BGR)
+                        data, _, _ = detector.detectAndDecode(warped_bgr)
+                        tag_id = str(data).strip() if data else None
+                
+                st.session_state.grade_result = {
+                    'res_img': res_img, 'html': html, 'l_cm': l_cm, 't_cm': t_cm,
+                    'c_cm': c_cm, 'grade_str': grade_str, 'tag_id': tag_id
+                }
+            else:
+                st.info(f"💡 現在「{c_name}」の画像解析・階級判定ロジックは準備中です。キュウリの計測を行う場合は初期設定で「キュウリ」を選択してください。")
 
         if st.session_state.grade_result is not None:
             res = st.session_state.grade_result
@@ -823,8 +815,16 @@ with tab3:
     st.write("設定した内容はスプレッドシート(Settingsシート)に記録され、起動時に反映されます。")
     
     with st.form("settings_form"):
-        new_crop = st.text_input("作物名", value=st.session_state.settings.get("crop_name", "キュウリ"))
-        new_emoji = st.text_input("絵文字アイコン", value=st.session_state.settings.get("emoji", "🥒"))
+        # 条件①対応: 作物名と絵文字のプルダウン化
+        crop_options_list = list(CROP_OPTIONS.keys())
+        current_crop = st.session_state.settings.get("crop_name", "キュウリ")
+        
+        default_index = crop_options_list.index(current_crop) if current_crop in crop_options_list else 0
+        selected_crop = st.selectbox("対象作物", crop_options_list, index=default_index)
+        selected_emoji = CROP_OPTIONS.get(selected_crop, "🥒")
+        
+        st.caption(f"選択されたアイコン: {selected_emoji}")
+        
         st.divider()
         st.write("📅 生育記録の項目名設定")
         date_count = st.number_input("測定したい日付の数 (最大10)", min_value=1, max_value=10, value=int(st.session_state.settings.get("date_count", 3)))
@@ -843,8 +843,8 @@ with tab3:
         
         if save_settings:
             new_settings = {
-                "crop_name": new_crop,
-                "emoji": new_emoji,
+                "crop_name": selected_crop,
+                "emoji": selected_emoji,
                 "date_count": str(date_count),
                 "date_labels": ",".join(new_labels),
                 "area_options": area_opts_str
