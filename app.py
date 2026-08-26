@@ -49,20 +49,28 @@ FONT_PATHS = [
 
 st.set_page_config(page_title="管理＆判定システム", layout="wide")
 
+# 修正条件②: 撮影読み込み後の自動トリミング・枠縮小を完全に無効化するスタイル定義
 st.markdown("""
     <style>
-    /* カメラ入力コンテナ全体を最大幅に */
-    [data-testid="stCameraInput"] {
-        width: 100% !important;
-    }
-    /* 撮影前(video)と撮影後(img)のスタイルを統一 */
-    [data-testid="stCameraInput"] video,
-    [data-testid="stCameraInput"] img {
+    /* カメラコンテナ本体および内部の全divのサイズ固定・切り抜き処理を解除 */
+    [data-testid="stCameraInput"],
+    [data-testid="stCameraInput"] > div,
+    [data-testid="stCameraInput"] div {
         width: 100% !important;
         max-width: 100% !important;
         height: auto !important;
-        max-height: 85vh !important; /* スマホ画面の高さの85%まで広げる */
-        object-fit: contain !important; /* 拡大・切り取りをせず、全体を枠内に収めて表示 */
+        overflow: visible !important; /* 読み込み後の画面端の切り取り（トリミング）を抑止 */
+    }
+
+    /* 映像・画像本体の描画設定 */
+    [data-testid="stCameraInput"] video,
+    [data-testid="stCameraInput"] img {
+        width: 100% !important;
+        height: auto !important;
+        max-height: 75vh !important; /* スマホ画面の高さに収める */
+        object-fit: contain !important; /* 拡大切り取りを行わず映像全体を表示 */
+        display: block !important;
+        margin: 0 auto !important;
     }
     </style>
 """, unsafe_allow_html=True)
