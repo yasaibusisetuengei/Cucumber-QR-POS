@@ -49,7 +49,7 @@ FONT_PATHS = [
 
 st.set_page_config(page_title="管理＆判定システム", layout="wide")
 
-# 条件③: カメラ表示画面を大きく拡大するスタイル定義
+# 修正条件②: カメラ表示画面を大きく拡大し、スマホ向けに縦画面表示にするスタイル定義
 st.markdown("""
     <style>
     [data-testid="stCameraInput"] video {
@@ -57,7 +57,8 @@ st.markdown("""
         max-width: 100% !important;
         height: auto !important;
         max-height: 75vh !important;
-        object-fit: contain !important;
+        aspect-ratio: 3 / 4 !important; /* スマホ縦画面向けの比率 */
+        object-fit: cover !important;   /* 枠に合わせて縦画面表示に切り取り */
     }
     [data-testid="stCameraInput"] {
         width: 100% !important;
@@ -162,7 +163,6 @@ def get_tag_info(tag_id):
         if code != "": return str(code)
     return None
 
-# 条件②対応: record_image を廃止し date_1_image ～ date_10_image を定義
 def register_new_item(tag_id):
     tags_df = load_tags()
     items_df = load_items()
@@ -234,17 +234,46 @@ def read_qr_from_bytes(file_bytes):
     data, _, _ = detector.detectAndDecode(img)
     return str(data).strip() if data else None
 
-# 条件②対応: date_1_image 等の対象列に反映
-def sync_record_image(item_code, filename, file_bytes, target_date_idx=1):
+# 修正条件①: 書き込まれる正しい列名を特定してポップアップ表示に反映
+def sync_record_image(item_code, filename, file_bytes):
     code = item_code
     if not code and file_bytes is not None:
         tag_id = read_qr_from_bytes(file_bytes)
         if tag_id:
             code = get_tag_info(tag_id) or register_new_item(tag_id)
+            
     if code and filename:
-        col_name = f"date_{target_date_idx}_image"
-        update_item_record(code, **{col_name: filename})
-        st.toast(f"📱 画像名「{filename}」を {col_name} 列に反映しました！")
+        target_col = "date_1_image"  # デフォルト列
+        items_df = load_items()
+        
+        if items_df is not None and not items_df.empty:
+            items_df['item_code'] = items_df['item_code'].astype(str)
+            match = items_df[items_df['item_code'] == str(code)]
+            if not match.empty:
+                item_data = match.iloc[0].to_dict()
+                try:
+                    date_count = int(st.session_state.settings.get("date_count", 3))
+                except Exception:
+                    date_count = 3
+                
+                today_str = datetime.date.today().strftime("%Y-%m-%d")
+                
+                # 1. まず「今日の日付」が記録されている列を探す
+                for i in range(1, date_count + 1):
+                    d_val = str(item_data.get(f'date_{i}', '')).strip()
+                    if d_val == today_str:
+                        target_col = f"date_{i}_image"
+                        break
+                else:
+                    # 2. なければ「空いている最初の列」を探す
+                    for i in range(1, date_count + 1):
+                        d_val = str(item_data.get(f'date_{i}', '')).strip()
+                        if d_val in ["", "nan", "None"]:
+                            target_col = f"date_{i}_image"
+                            break
+
+        update_item_record(code, **{target_col: filename})
+        st.toast(f"📱 画像名「{filename}」を {target_col} 列に反映しました！")
 
 def sync_grade_image(item_code, filename, file_bytes):
     code = item_code
@@ -561,6 +590,7 @@ with tab1:
             cam_tag = read_qr_from_bytes(file_bytes_qr)
             cam_item_code = get_tag_info(cam_tag) if cam_tag else None
             
+            # 引数から target_date_idx を削除し、動的判定の関数へ渡す
             st.download_button(
                 label="💾 撮影画像をスマホに保存",
                 data=st.session_state.temp_record_bytes,
@@ -568,7 +598,7 @@ with tab1:
                 mime="image/jpeg",
                 key="dl_cam_qr",
                 on_click=sync_record_image,
-                args=(cam_item_code, st.session_state.record_img_filename, file_bytes_qr, 1)
+                args=(cam_item_code, st.session_state.record_img_filename, file_bytes_qr)
             )
             
     elif img_source_qr == "アップロード":
@@ -617,7 +647,6 @@ with tab1:
             date_count = int(st.session_state.settings.get("date_count", 3))
             today_str = datetime.date.today().strftime("%Y-%m-%d")
             
-            # 条件②対応: 本日日付に対応する date_{i}_image に画像保存
             if tag_id not in st.session_state.processed_qrs:
                 already_scanned = False
                 for i in range(1, date_count + 1):
@@ -676,7 +705,6 @@ with tab1:
             if st.button("💾 記録をまとめて更新する", type="primary", use_container_width=True):
                 update_kwargs = {'area_number': str(new_area), 'comment': str(new_comment)}
                 
-                # 条件②対応: 入力された各日付に応じて date_i_image も併せて保存
                 for i in range(date_count):
                     val = st.session_state[f"d{i+1}_{item_code}"]
                     d_str = val.strftime("%Y-%m-%d") if val else ""
@@ -741,7 +769,6 @@ with tab2:
 
     with col2:
         if grade_btn and file_bytes_grade is not None:
-            # 条件①対応: 将来的な他作物（トマト・ナス等）判定ロジックへの分岐
             if c_name == "キュウリ":
                 cv_img = cv2.imdecode(file_bytes_grade, 1)
                 cv_img_rgb = cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB)
@@ -814,7 +841,6 @@ with tab3:
     st.write("設定した内容はスプレッドシート(Settingsシート)に記録され、起動時に反映されます。")
     
     with st.form("settings_form"):
-        # 条件①対応: 作物名と絵文字のプルダウン化
         crop_options_list = list(CROP_OPTIONS.keys())
         current_crop = st.session_state.settings.get("crop_name", "キュウリ")
         
