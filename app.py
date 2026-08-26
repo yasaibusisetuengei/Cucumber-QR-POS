@@ -29,10 +29,9 @@ COLOR_THICKNESS = (255, 0, 255)
 # 作物マスター定義（選択肢と絵文字）
 CROP_OPTIONS = {
     "キュウリ": "🥒",
-    "トマト": "🍅",
-    "ナス": "🍆",
-    "イチゴ": "🍓",
-    "パプリカ": "🫑"
+    "トマト（作成中）": "🍅",
+    "ナス（作成中）": "🍆",
+    "イチゴ（作成中）": "🍓",
 }
 
 SAMPLE1_URL = "https://raw.githubusercontent.com//yasaibusisetuengei/Cucumber-QR-POS/main/sample/sample1.png"
@@ -50,18 +49,24 @@ FONT_PATHS = [
 
 st.set_page_config(page_title="管理＆判定システム", layout="wide")
 
-# 条件③: カメラ表示画面を大きく拡大するスタイル定義
+# 条件②対応: カメラ表示画面を縦画面（ポートレート）にし、大きく拡大するスタイル定義
 st.markdown("""
     <style>
-    [data-testid="stCameraInput"] video {
+    [data-testid="stCameraInput"] {
+        width: 100% !important;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+    }
+    [data-testid="stCameraInput"] video,
+    [data-testid="stCameraInput"] canvas,
+    [data-testid="stCameraInput"] img {
         width: 100% !important;
         max-width: 100% !important;
         height: auto !important;
         max-height: 75vh !important;
-        object-fit: contain !important;
-    }
-    [data-testid="stCameraInput"] {
-        width: 100% !important;
+        aspect-ratio: 9 / 16 !important;
+        object-fit: cover !important;
     }
     </style>
 """, unsafe_allow_html=True)
@@ -163,7 +168,6 @@ def get_tag_info(tag_id):
         if code != "": return str(code)
     return None
 
-# 条件②対応: record_image を廃止し date_1_image ～ date_10_image を定義
 def register_new_item(tag_id):
     tags_df = load_tags()
     items_df = load_items()
@@ -235,7 +239,6 @@ def read_qr_from_bytes(file_bytes):
     data, _, _ = detector.detectAndDecode(img)
     return str(data).strip() if data else None
 
-# 条件②対応: date_1_image 等の対象列に反映
 def sync_record_image(item_code, filename, file_bytes, target_date_idx=1):
     code = item_code
     if not code and file_bytes is not None:
@@ -562,6 +565,27 @@ with tab1:
             cam_tag = read_qr_from_bytes(file_bytes_qr)
             cam_item_code = get_tag_info(cam_tag) if cam_tag else None
             
+            # 条件①対応: 動的に対象の date_i_image インデックスを判定して渡す
+            date_count = int(st.session_state.settings.get("date_count", 3))
+            today_str = datetime.date.today().strftime("%Y-%m-%d")
+            target_idx = 1
+            if cam_item_code:
+                items_df = load_items()
+                match = items_df[items_df['item_code'] == cam_item_code]
+                if not match.empty:
+                    item_data = match.iloc[0].to_dict()
+                    already_scanned = False
+                    for i in range(1, date_count + 1):
+                        if str(item_data.get(f'date_{i}', '')).strip() == today_str:
+                            already_scanned = True
+                            target_idx = i
+                            break
+                    if not already_scanned:
+                        for i in range(1, date_count + 1):
+                            if not str(item_data.get(f'date_{i}', '')).strip():
+                                target_idx = i
+                                break
+
             st.download_button(
                 label="💾 撮影画像をスマホに保存",
                 data=st.session_state.temp_record_bytes,
@@ -569,7 +593,7 @@ with tab1:
                 mime="image/jpeg",
                 key="dl_cam_qr",
                 on_click=sync_record_image,
-                args=(cam_item_code, st.session_state.record_img_filename, file_bytes_qr, 1)
+                args=(cam_item_code, st.session_state.record_img_filename, file_bytes_qr, target_idx)
             )
             
     elif img_source_qr == "アップロード":
@@ -618,7 +642,6 @@ with tab1:
             date_count = int(st.session_state.settings.get("date_count", 3))
             today_str = datetime.date.today().strftime("%Y-%m-%d")
             
-            # 条件②対応: 本日日付に対応する date_{i}_image に画像保存
             if tag_id not in st.session_state.processed_qrs:
                 already_scanned = False
                 for i in range(1, date_count + 1):
@@ -677,7 +700,6 @@ with tab1:
             if st.button("💾 記録をまとめて更新する", type="primary", use_container_width=True):
                 update_kwargs = {'area_number': str(new_area), 'comment': str(new_comment)}
                 
-                # 条件②対応: 入力された各日付に応じて date_i_image も併せて保存
                 for i in range(date_count):
                     val = st.session_state[f"d{i+1}_{item_code}"]
                     d_str = val.strftime("%Y-%m-%d") if val else ""
@@ -742,7 +764,6 @@ with tab2:
 
     with col2:
         if grade_btn and file_bytes_grade is not None:
-            # 条件①対応: 将来的な他作物（トマト・ナス等）判定ロジックへの分岐
             if c_name == "キュウリ":
                 cv_img = cv2.imdecode(file_bytes_grade, 1)
                 cv_img_rgb = cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB)
@@ -815,7 +836,6 @@ with tab3:
     st.write("設定した内容はスプレッドシート(Settingsシート)に記録され、起動時に反映されます。")
     
     with st.form("settings_form"):
-        # 条件①対応: 作物名と絵文字のプルダウン化
         crop_options_list = list(CROP_OPTIONS.keys())
         current_crop = st.session_state.settings.get("crop_name", "キュウリ")
         
