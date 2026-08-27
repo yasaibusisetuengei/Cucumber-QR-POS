@@ -243,7 +243,6 @@ def read_qr_from_bytes(file_bytes):
     data, _, _ = detector.detectAndDecode(img)
     return str(data).strip() if data else None
 
-# 修正条件①: 書き込まれる正しい列名を特定してポップアップ表示に反映
 def sync_record_image(item_code, filename, file_bytes):
     code = item_code
     if not code and file_bytes is not None:
@@ -267,14 +266,12 @@ def sync_record_image(item_code, filename, file_bytes):
                 
                 today_str = datetime.date.today().strftime("%Y-%m-%d")
                 
-                # 1. まず「今日の日付」が記録されている列を探す
                 for i in range(1, date_count + 1):
                     d_val = str(item_data.get(f'date_{i}', '')).strip()
                     if d_val == today_str:
                         target_col = f"date_{i}_image"
                         break
                 else:
-                    # 2. なければ「空いている最初の列」を探す
                     for i in range(1, date_count + 1):
                         d_val = str(item_data.get(f'date_{i}', '')).strip()
                         if d_val in ["", "nan", "None"]:
@@ -482,6 +479,13 @@ def generate_qr_pdf(qr_start: int, qr_end: int, qr_size_mm: int) -> bytes | None
     if cols == 0 or rows == 0:
         return None
 
+    # ====== 修正点: 配置全体を中央に寄せるための開始座標を計算 ======
+    total_w_px = cols * tag_w_px
+    total_h_px = rows * tag_h_px
+    start_x_px = (a4_w_px - total_w_px) // 2
+    start_y_px = (a4_h_px - total_h_px) // 2
+    # ================================================================
+
     pages = []
     page_data = []
 
@@ -518,8 +522,9 @@ def generate_qr_pdf(qr_start: int, qr_end: int, qr_size_mm: int) -> bytes | None
             draw_back = ImageDraw.Draw(back_page)
 
             for item in page_data:
-                fx = margin_px + item["x_idx"] * tag_w_px + int(5 * mm_to_px)
-                fy = margin_px + item["y_idx"] * tag_h_px + top_padding
+                # 表面の座標計算 (余白だけでなく中央寄せのオフセットを適用)
+                fx = start_x_px + item["x_idx"] * tag_w_px + int(5 * mm_to_px)
+                fy = start_y_px + item["y_idx"] * tag_h_px + top_padding
                 front_page.paste(item["qr_img"], (fx, fy))
                 draw_front.rectangle([
                     fx - int(5 * mm_to_px), fy - top_padding,
@@ -530,9 +535,10 @@ def generate_qr_pdf(qr_start: int, qr_end: int, qr_size_mm: int) -> bytes | None
                     fx + qr_size_px // 2 + 10, fy - top_padding + 30
                 ], outline="black")
 
+                # 裏面の座標計算 (表面とぴったり一致するよう計算)
                 bx_idx = cols - 1 - item["x_idx"]
-                bx = margin_px + bx_idx * tag_w_px + int(5 * mm_to_px)
-                by = margin_px + item["y_idx"] * tag_h_px + top_padding
+                bx = start_x_px + bx_idx * tag_w_px + int(5 * mm_to_px)
+                by = start_y_px + item["y_idx"] * tag_h_px + top_padding
                 draw_back.rectangle([
                     bx - int(5 * mm_to_px), by - top_padding,
                     bx + qr_size_px + int(5 * mm_to_px), by + qr_size_px + bottom_padding
@@ -552,7 +558,8 @@ def generate_qr_pdf(qr_start: int, qr_end: int, qr_size_mm: int) -> bytes | None
             x_idx, y_idx = 0, 0
 
     pdf_bytes = BytesIO()
-    pages[0].save(pdf_bytes, format="PDF", save_all=True, append_images=pages[1:])
+    if pages:
+        pages[0].save(pdf_bytes, format="PDF", save_all=True, append_images=pages[1:])
     return pdf_bytes.getvalue()
 
 # ==========================================
@@ -599,7 +606,6 @@ with tab1:
             cam_tag = read_qr_from_bytes(file_bytes_qr)
             cam_item_code = get_tag_info(cam_tag) if cam_tag else None
             
-            # 引数から target_date_idx を削除し、動的判定の関数へ渡す
             st.download_button(
                 label="💾 撮影画像をスマホに保存",
                 data=st.session_state.temp_record_bytes,
