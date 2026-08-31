@@ -24,7 +24,6 @@ DIST_5CM_PX = 50.0 * PPM
 COLOR_CONTOUR = (0, 255, 0)
 COLOR_TABLE_LINE = (255, 255, 0)
 COLOR_CURVE_LINE = (255, 0, 0)
-# 修正箇所: 太さの描画色を頭と尻で分ける
 COLOR_THICKNESS_HEAD = (255, 0, 255) # 紫 (頭)
 COLOR_THICKNESS_TAIL = (255, 128, 0) # オレンジ (尻)
 
@@ -51,7 +50,6 @@ FONT_PATHS = [
 
 st.set_page_config(page_title="管理＆判定システム", layout="wide")
 
-# 修正条件②: 撮影読み込み後の自動トリミング・枠縮小を完全に無効化するスタイル定義
 st.markdown("""
     <style>
     /* カメラコンテナ本体および内部の全divのサイズ固定・切り抜き処理を解除 */
@@ -61,7 +59,7 @@ st.markdown("""
         width: 100% !important;
         max-width: 100% !important;
         height: auto !important;
-        overflow: visible !important; /* 読み込み後の画面端の切り取り（トリミング）を抑止 */
+        overflow: visible !important;
     }
 
     /* 映像・画像本体の描画設定 */
@@ -69,9 +67,8 @@ st.markdown("""
     [data-testid="stCameraInput"] img {
         width: 100% !important;
         height: auto !important;
-        max-height: 75vh !important; /* スマホ画面の高さに収める */
+        max-height: 75vh !important;
         object-fit: contain !important;
-        /* 拡大切り取りを行わず映像全体を表示 */
         display: block !important;
         margin: 0 auto !important;
     }
@@ -84,13 +81,11 @@ conn = st.connection("gsheets", type=GSheetsConnection)
 # 🌟 ヘルパー関数 (ユーティリティ & データベース)
 # ==========================================
 def load_settings() -> dict:
-    """設定情報をスプレッドシートまたはデフォルト値からロード"""
     for attempt in range(3):
         try:
             df = conn.read(worksheet="Settings", ttl=0, dtype=str)
             if df is None or df.empty:
                 raise ValueError("Settings empty")
-            
             return dict(zip(df['key'], df['value']))
         except Exception:
             if attempt < 2:
@@ -103,17 +98,14 @@ def load_settings() -> dict:
                     "date_labels": "発芽日,開花日,収穫日",
                     "area_options": "1,2,3,4,5,6,7,8,9,10,11,12"
                 }
-       
                 try:
                     df = pd.DataFrame(list(default_settings.items()), columns=["key", "value"])
                     conn.update(worksheet="Settings", data=df)
                 except Exception:
                     pass
-         
                 return default_settings
 
 def play_notification_sound():
-    """読み取り通知音・振動をJavaScriptで再生"""
     js_code = """
     <script>
     try {
@@ -136,7 +128,6 @@ def play_notification_sound():
     components.html(js_code, height=0, width=0)
 
 def get_image_bytes_from_url(url: str):
-    """URLから画像バイトデータを取得"""
     try:
         req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
         with urllib.request.urlopen(req) as response:
@@ -226,7 +217,6 @@ def update_item_record(item_code, **kwargs):
             if key not in items_df.columns:
                 items_df[key] = ""
             items_df[key] = items_df[key].astype(object)
-  
             items_df.loc[idx, key] = val
             
         conn.update(worksheet="Items", data=items_df)
@@ -240,7 +230,6 @@ def unbind_tag(tag_id):
         tags_df.loc[idx, 'current_item_code'] = ""
         conn.update(worksheet="Tags", data=tags_df)
         st.cache_data.clear()
-   
         return True
     return False
 
@@ -420,7 +409,6 @@ def draw_results(warped, contour, ds, de, cp, foot, hp1, hp2, tp1, tp2):
     if foot is not None and cp is not None:
         cv2.line(res, tuple(foot.astype(int)), tuple(cp.astype(int)), COLOR_CURVE_LINE, 3)
         cv2.circle(res, tuple(cp.astype(int)), 6, COLOR_CURVE_LINE, -1)
-    # 修正箇所: 頭と尻で描画色を変更
     if hp1 is not None and hp2 is not None: cv2.line(res, tuple(hp1.astype(int)), tuple(hp2.astype(int)), COLOR_THICKNESS_HEAD, 3)
     if tp1 is not None and tp2 is not None: cv2.line(res, tuple(tp1.astype(int)), tuple(tp2.astype(int)), COLOR_THICKNESS_TAIL, 3)
     return res
@@ -434,15 +422,25 @@ def process_measurement(image, crop_name="キュウリ"):
     
     length_cm, end1, end2 = calculate_length(contour)
     curve_cm, ds, de, cp, foot = calculate_curve(contour)
-    head_thick_cm, hp1, hp2 = calculate_thickness(end1, end2, DIST_5CM_PX, contour)
-    tail_thick_cm, tp1, tp2 = calculate_thickness(end2, end1, DIST_5CM_PX, contour)
+    
+    # ==== 修正箇所: 両端の太さを計測し、太い方を頭・細い方を尻にする ====
+    thick1_cm, p1_1, p1_2 = calculate_thickness(end1, end2, DIST_5CM_PX, contour)
+    thick2_cm, p2_1, p2_2 = calculate_thickness(end2, end1, DIST_5CM_PX, contour)
 
-    # ==== 修正箇所: 実測値と予測値の比較データに基づく補正処理 ====
+    if thick1_cm >= thick2_cm:
+        head_thick_cm, hp1, hp2 = thick1_cm, p1_1, p1_2
+        tail_thick_cm, tp1, tp2 = thick2_cm, p2_1, p2_2
+    else:
+        head_thick_cm, hp1, hp2 = thick2_cm, p2_1, p2_2
+        tail_thick_cm, tp1, tp2 = thick1_cm, p1_1, p1_2
+    # ====================================================================
+
+    # ==== 実測値と予測値の比較データに基づく補正処理 ====
     length_cm = length_cm * 0.916
     head_thick_cm = head_thick_cm * 1.001
     tail_thick_cm = tail_thick_cm * 0.992
     curve_cm = curve_cm * 0.832
-    # ==============================================================
+    # ====================================================
 
     avg_thick_cm = (head_thick_cm + tail_thick_cm) / 2.0 if head_thick_cm > 0 else 1.5
 
@@ -451,7 +449,6 @@ def process_measurement(image, crop_name="キュウリ"):
     
     res_img = draw_results(warped, contour, ds, de, cp, foot, hp1, hp2, tp1, tp2)
     
-    # 修正箇所: HTML内の表記と絵文字を色変更に合わせて修正
     html = f"""
     <div style="background-color: #ffffff; padding: 20px; border-radius: 12px; border: 1px solid #e0e0e0; color: black;">
         <h3 style="text-align: center; margin-top: 0; color: #2e7d32;">📐 計測・判定結果 ({crop_name})</h3>
@@ -848,106 +845,119 @@ with tab2:
                         
                     st.success(f"✅ タグ【{res['tag_id']}】を検出しました。重さを入力して登録を完了させてください。")
                     with st.form("register_grade_form"):
-                        harvest_weight = st.number_input("重さ (g)", min_value=0.0, step=1.0, value=100.0, key="harvest_weight")
-                        submit_btn = st.form_submit_button("💾 データベースに登録", type="primary")
-                        
-                        if submit_btn:
+                        harvest_weight = st.number_input("重さ (g)", min_value=0.0, step=1.0, value=0.0)
+                        submitted = st.form_submit_button("💾 結果をDBに登録する")
+                        if submitted:
                             item_code = get_tag_info(res['tag_id'])
-                            if not item_code: item_code = register_new_item(res['tag_id'])
-                            
-                            update_kwargs = {
-                                'length': float(res['l_cm']), 'thickness': float(res['t_cm']),
-                                'curve': float(res['c_cm']), 'grade': str(res['grade_str']),
-                                'weight': float(harvest_weight),
-                                'grade_image': st.session_state.get('grade_img_filename', '')
-                            }
-                            
-                            update_item_record(item_code, **update_kwargs)
-                            st.success(f"🎉 アイテム【{item_code}】の情報を登録しました！ (画像名: {update_kwargs['grade_image']})")
+                            if not item_code:
+                                item_code = register_new_item(res['tag_id'])
+                                st.info("新しいアイテムとして登録しました。")
+                            update_item_record(
+                                item_code,
+                                length=round(res['l_cm'], 1),
+                                thickness=round(res['t_cm'], 1),
+                                curve=round(res['c_cm'], 1),
+                                grade=res['grade_str'],
+                                weight=round(harvest_weight, 1),
+                                grade_image=st.session_state.get('grade_img_filename', '')
+                            )
+                            st.success(f"🎉 判定結果と重さを {item_code} に記録しました！")
                 else:
-                    st.error("⚠️ 画像からQRコードを検出できませんでした。計測は完了しましたが、データベースには登録できません。")
+                    st.warning("⚠️ QRコードが検出できませんでした。A4ボード上のQRコードがカメラに明確に写っているか確認してください。")
 
-    st.divider()
-    with st.expander("🔗 QRコードの使いまわし（タグのリンク解除）"):
-        st.write(f"QRコードを再利用して新しい{c_name}に使用する場合、現在のアイテムとの紐づけを解除します。")
-        unbind_target_tag = st.text_input("リンク解除するQRタグ番号", key="unbind_tag_input")
-        if st.button("🔓 リンク解除を実行", type="secondary"):
-            if unbind_target_tag:
-                if unbind_tag(unbind_target_tag):
-                    st.success(f"タグ【{unbind_target_tag}】のリンクを解除しました！")
-                else:
-                    st.warning("タグが見つからないか、すでに解除されています。")
-            else:
-                st.error("タグ番号を入力してください。")
-
-# --- タブ3: 初期設定 (カスタマイズ・QR生成) ---
+# --- タブ3: 初期設定 (設定変更 & QR発行) ---
 with tab3:
     st.header("⚙️ システム初期設定")
-    st.write("設定した内容はスプレッドシート(Settingsシート)に記録され、起動時に反映されます。")
     
-    with st.form("settings_form"):
-        crop_options_list = list(CROP_OPTIONS.keys())
-        current_crop = st.session_state.settings.get("crop_name", "キュウリ")
+    st.subheader("システム・マスター設定")
+    current_crop = st.session_state.settings.get("crop_name", "キュウリ")
+    new_crop = st.selectbox("対象作物を選択", list(CROP_OPTIONS.keys()), index=list(CROP_OPTIONS.keys()).index(current_crop) if current_crop in CROP_OPTIONS else 0)
+    
+    col_d1, col_d2 = st.columns(2)
+    with col_d1:
+        new_date_count = st.number_input("記録する日付の数（例: 発芽、開花、収穫なら3）", min_value=1, max_value=10, value=int(st.session_state.settings.get("date_count", 3)))
+    with col_d2:
+        default_labels = "発芽日,開花日,収穫日"
+        if new_date_count != 3:
+            default_labels = ",".join([f"日付{i+1}" for i in range(new_date_count)])
+        new_date_labels = st.text_input("日付のラベル名（カンマ区切り）", value=st.session_state.settings.get("date_labels", default_labels))
         
-        default_index = crop_options_list.index(current_crop) if current_crop in crop_options_list else 0
-        selected_crop = st.selectbox("対象作物", crop_options_list, index=default_index)
-        selected_emoji = CROP_OPTIONS.get(selected_crop, "🥒")
-        
-        st.caption(f"選択されたアイコン: {selected_emoji}")
-        
-        st.divider()
-        st.write("📅 生育記録の項目名設定")
-        date_count = st.number_input("測定したい日付の数 (最大10)", min_value=1, max_value=10, value=int(st.session_state.settings.get("date_count", 3)))
-        
-        current_labels = st.session_state.settings.get("date_labels", "発芽日,開花日,収穫日").split(",")
-        new_labels = []
-        for i in range(date_count):
-            default_lbl = current_labels[i] if i < len(current_labels) else f"日付{i+1}"
-            new_labels.append(st.text_input(f"日付項目 {i+1} (内部列名: date_{i+1})", value=default_lbl))
-            
-        st.divider()
-        st.write("📍 試験エリア番号の設定")
-        area_opts_str = st.text_area("エリア番号のプルダウン中身（カンマ区切りで入力）", value=st.session_state.settings.get("area_options", "1,2,3,4,5,6,7,8,9,10,11,12"))
-        
-        save_settings = st.form_submit_button("💾 設定を保存して適用", type="primary")
-        
-        if save_settings:
-            new_settings = {
-                "crop_name": selected_crop,
-                "emoji": selected_emoji,
-                "date_count": str(date_count),
-                "date_labels": ",".join(new_labels),
-                "area_options": area_opts_str
-            }
-            st.session_state.settings = new_settings
-            df_settings = pd.DataFrame(list(new_settings.items()), columns=["key", "value"])
-            conn.update(worksheet="Settings", data=df_settings)
-            st.success("✅ 設定をスプレッドシートに保存しました。画面を更新します。")
-            time.sleep(1)
-            st.rerun()
+    new_area_opts = st.text_input("試験エリア番号の選択肢（カンマ区切り）", value=st.session_state.settings.get("area_options", "1,2,3,4,5,6,7,8,9,10,11,12"))
+    
+    if st.button("💾 設定を保存"):
+        new_settings = {
+            "crop_name": new_crop,
+            "emoji": CROP_OPTIONS[new_crop],
+            "date_count": str(new_date_count),
+            "date_labels": new_date_labels,
+            "area_options": new_area_opts
+        }
+        df = pd.DataFrame(list(new_settings.items()), columns=["key", "value"])
+        conn.update(worksheet="Settings", data=df)
+        st.session_state.settings = new_settings
+        st.success("✅ 設定を更新しました！（反映にはページリロードが必要な場合があります）")
+        st.rerun()
 
-    st.divider()
-    st.subheader("🖨️ 印刷用QRコードシート作成 (A4 PDF・両面印刷対応)")
-    st.write("指定した番号のQRコードをA4サイズに敷き詰めたPDFを作成します。")
-    st.write("※ 長辺とじ（左右反転）で両面印刷することを想定し、裏面ページにタグ番号が印字されます。")
+    st.markdown("---")
+    st.subheader("🏷️ 物理タグ (QRコード) PDF 発行")
+    st.write("A4用紙の両面に印刷できるタグ（QRコード）のPDFを生成します。")
+    st.write("※ 表面・裏面の2ページ構成で生成されます。印刷時に**「両面印刷」「実際のサイズ（100%）」**を選択してください。")
+    st.write("※ 余白の設定によってはズレが生じる場合があります。必要に応じて試し刷りを行ってください。")
+
+    col1, col2, col3 = st.columns(3)
+    with col1: qr_start = st.number_input("開始番号", min_value=1, value=1, step=1)
+    with col2: qr_end = st.number_input("終了番号", min_value=1, value=40, step=1)
+    with col3: qr_size = st.number_input("QRサイズ (mm)", min_value=10, max_value=50, value=25, step=1)
+
+    if st.button("📄 PDFを生成", type="primary"):
+        if qr_start > qr_end:
+            st.error("開始番号は終了番号以下にしてください。")
+        else:
+            with st.spinner("PDFを生成中..."):
+                pdf_data = generate_qr_pdf(qr_start, qr_end, qr_size)
+                if pdf_data:
+                    st.success("✅ PDFの生成が完了しました！")
+                    st.download_button(
+                        label="📥 PDFをダウンロード",
+                        data=pdf_data,
+                        file_name=f"QR_Tags_{qr_start}_to_{qr_end}.pdf",
+                        mime="application/pdf",
+                        use_container_width=True
+                    )
+                else:
+                    st.error("PDFの生成に失敗しました。サイズ設定等を見直してください。")
+
+    st.markdown("---")
+    st.subheader("🗑️ データベース管理")
     
-    col_q1, col_q2, col_q3 = st.columns(3)
-    with col_q1:
-        qr_start = st.number_input("開始番号", min_value=1, value=1)
-    with col_q2:
-        qr_end = st.number_input("終了番号", min_value=1, value=20)
-    with col_q3:
-        qr_size = st.number_input("QRコードサイズ (mm)", min_value=10, max_value=100, value=30)
+    st.write("▼ 全タグの紐付け解除（Itemsデータは残ります）")
+    if st.button("🚨 全タグの紐付けを解除", type="secondary"):
+        tags_df = load_tags()
+        if tags_df is not None and not tags_df.empty:
+            tags_df['current_item_code'] = ""
+            conn.update(worksheet="Tags", data=tags_df)
+            st.cache_data.clear()
+            st.success("✅ 全てのタグの紐付けをリセットしました！")
+        else:
+            st.info("解除するタグ情報がありません。")
+
+    st.write("▼ 全Itemsレコード削除（Tagsの紐付けも解除されます）")
+    if st.button("🚨 全Itemsレコードを削除", type="primary"):
+        empty_items_df = pd.DataFrame(columns=[
+            'item_code', 'weight', 'area_number', 'comment', 'grade',
+            'length', 'thickness', 'curve', 'grade_image',
+            'date_1', 'date_2', 'date_3', 'date_4', 'date_5', 'date_6', 'date_7', 'date_8', 'date_9', 'date_10',
+            'date_1_image', 'date_2_image', 'date_3_image', 'date_4_image', 'date_5_image', 'date_6_image', 'date_7_image', 'date_8_image', 'date_9_image', 'date_10_image'
+        ])
+        conn.update(worksheet="Items", data=empty_items_df)
         
-    if st.button("📄 QRコードシートを作成", type="primary"):
-        with st.spinner("PDFを生成中..."):
-            pdf_data = generate_qr_pdf(qr_start, qr_end, qr_size)
-            if pdf_data is None:
-                st.error("指定されたQRコードサイズが大きすぎてA4に配置できません。サイズを小さくしてください。")
-            else:
-                st.download_button(
-                    label="📥 作成した両面QRコードシート(PDF)をダウンロード",
-                    data=pdf_data,
-                    file_name=f"qr_tags_{qr_start}_to_{qr_end}_duplex.pdf",
-                    mime="application/pdf"
-                )
+        tags_df = load_tags()
+        if tags_df is not None and not tags_df.empty:
+            tags_df['current_item_code'] = ""
+            conn.update(worksheet="Tags", data=tags_df)
+        
+        st.cache_data.clear()
+        st.success("✅ 全てのItemsレコードを削除し、タグの紐付けをリセットしました！")
+
+st.markdown("---")
+st.markdown("<p style='text-align: center; color: #888;'>作物管理＆判定システム v2.0</p>", unsafe_allow_html=True)
