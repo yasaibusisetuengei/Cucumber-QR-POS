@@ -68,7 +68,8 @@ st.markdown("""
         width: 100% !important;
         height: auto !important;
         max-height: 75vh !important; /* スマホ画面の高さに収める */
-        object-fit: contain !important; /* 拡大切り取りを行わず映像全体を表示 */
+        object-fit: contain !important;
+        /* 拡大切り取りを行わず映像全体を表示 */
         display: block !important;
         margin: 0 auto !important;
     }
@@ -87,6 +88,7 @@ def load_settings() -> dict:
             df = conn.read(worksheet="Settings", ttl=0, dtype=str)
             if df is None or df.empty:
                 raise ValueError("Settings empty")
+            
             return dict(zip(df['key'], df['value']))
         except Exception:
             if attempt < 2:
@@ -99,11 +101,13 @@ def load_settings() -> dict:
                     "date_labels": "発芽日,開花日,収穫日",
                     "area_options": "1,2,3,4,5,6,7,8,9,10,11,12"
                 }
+       
                 try:
                     df = pd.DataFrame(list(default_settings.items()), columns=["key", "value"])
                     conn.update(worksheet="Settings", data=df)
                 except Exception:
                     pass
+         
                 return default_settings
 
 def play_notification_sound():
@@ -111,7 +115,8 @@ def play_notification_sound():
     js_code = """
     <script>
     try {
-        if (navigator.vibrate) { navigator.vibrate([150, 100, 150]); }
+        if (navigator.vibrate) { navigator.vibrate([150, 100, 150]);
+        }
         var audioCtx = new (window.AudioContext || window.webkitAudioContext)();
         if (audioCtx.state === 'suspended') { audioCtx.resume(); }
         var oscillator = audioCtx.createOscillator();
@@ -140,6 +145,7 @@ def get_image_bytes_from_url(url: str):
 
 def load_tags():
     for attempt in range(3):
+ 
         try:
             df = conn.read(worksheet="Tags", ttl=600, dtype=str)
             return df.fillna("")
@@ -150,6 +156,7 @@ def load_tags():
 def load_items():
     for attempt in range(3):
         try:
+          
             df = conn.read(worksheet="Items", ttl=600, dtype=str)
             for col in ['weight', 'length', 'thickness', 'curve']:
                 if col in df.columns:
@@ -181,7 +188,7 @@ def register_new_item(tag_id):
     
     tags_df['tag_id'] = tags_df['tag_id'].astype(str)
     item_code = f"ITEM-{datetime.datetime.now().strftime('%Y%m%d-%H%M%S')}"
-    
+   
     if str(tag_id) in tags_df['tag_id'].values:
         tags_df.loc[tags_df['tag_id'] == str(tag_id), 'current_item_code'] = item_code
     else:
@@ -219,6 +226,7 @@ def update_item_record(item_code, **kwargs):
             if key not in items_df.columns:
                 items_df[key] = ""
             items_df[key] = items_df[key].astype(object)
+  
             items_df.loc[idx, key] = val
             
         conn.update(worksheet="Items", data=items_df)
@@ -232,6 +240,7 @@ def unbind_tag(tag_id):
         tags_df.loc[idx, 'current_item_code'] = ""
         conn.update(worksheet="Tags", data=tags_df)
         st.cache_data.clear()
+   
         return True
     return False
 
@@ -248,6 +257,7 @@ def sync_record_image(item_code, filename, file_bytes):
     if not code and file_bytes is not None:
         tag_id = read_qr_from_bytes(file_bytes)
         if tag_id:
+ 
             code = get_tag_info(tag_id) or register_new_item(tag_id)
             
     if code and filename:
@@ -256,25 +266,30 @@ def sync_record_image(item_code, filename, file_bytes):
         
         if items_df is not None and not items_df.empty:
             items_df['item_code'] = items_df['item_code'].astype(str)
+      
             match = items_df[items_df['item_code'] == str(code)]
             if not match.empty:
                 item_data = match.iloc[0].to_dict()
                 try:
                     date_count = int(st.session_state.settings.get("date_count", 3))
                 except Exception:
+  
                     date_count = 3
                 
                 today_str = datetime.date.today().strftime("%Y-%m-%d")
                 
                 for i in range(1, date_count + 1):
+        
                     d_val = str(item_data.get(f'date_{i}', '')).strip()
                     if d_val == today_str:
                         target_col = f"date_{i}_image"
                         break
+            
                 else:
                     for i in range(1, date_count + 1):
                         d_val = str(item_data.get(f'date_{i}', '')).strip()
                         if d_val in ["", "nan", "None"]:
+              
                             target_col = f"date_{i}_image"
                             break
 
@@ -285,6 +300,7 @@ def sync_grade_image(item_code, filename, file_bytes):
     code = item_code
     if not code and file_bytes is not None:
         tag_id = read_qr_from_bytes(file_bytes)
+     
         if not tag_id:
             img = cv2.imdecode(file_bytes, 1)
             if img is not None:
@@ -297,6 +313,7 @@ def sync_grade_image(item_code, filename, file_bytes):
             code = get_tag_info(tag_id) or register_new_item(tag_id)
             
     if code and filename:
+     
         update_item_record(code, grade_image=filename)
         st.toast(f"📱 画像名「{filename}」を grade_image 列に反映しました！")
     elif not code:
@@ -313,6 +330,7 @@ def detect_and_warp(image: np.ndarray):
     if ids is None or len(ids) < 4:
         image = cv2.flip(image, 1)
         corners, ids, _ = detector.detectMarkers(image)
+  
     if ids is None or len(ids) < 4:
         return None, "マーカーを探しています...（A4ボードの四隅を写してください）"
     centers = np.array([corner[0].mean(axis=0) for corner in corners])
@@ -336,7 +354,8 @@ def extract_cucumber_contour(warped_img: np.ndarray, crop_name: str = "作物"):
     kernel = np.ones((5, 5), np.uint8)
     mask = cv2.morphologyEx(cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel), cv2.MORPH_CLOSE, kernel)
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    if not contours: return None, f"{crop_name}が検出できません。"
+    if not contours: 
+        return None, f"{crop_name}が検出できません。"
     return max(contours, key=cv2.contourArea), None
 
 def calculate_length(contour):
@@ -347,6 +366,7 @@ def calculate_length(contour):
         for j in range(i + 1, len(approx)):
             d = np.linalg.norm(approx[i][0] - approx[j][0])
             if d > max_dist:
+             
                 max_dist, end1, end2 = d, approx[i][0], approx[j][0]
     return (max_dist / PPM) / 10.0, end1, end2
 
@@ -358,6 +378,7 @@ def calculate_curve(contour):
         max_depth = 0
         best_defect = None
         for i in range(defects.shape[0]):
+            
             s, e, f, d = defects[i].flatten()
             if d > max_depth:
                 max_depth, best_defect = d, defects[i].flatten()
@@ -365,6 +386,7 @@ def calculate_curve(contour):
             s, e, f, d = best_defect
             defect_start, defect_end = contour[s][0], contour[e][0]
             curve_point = contour[f][0]
+ 
             curve_px = d / 256.0
             v_line = defect_end.astype(np.float32) - defect_start.astype(np.float32)
             v_far = curve_point.astype(np.float32) - defect_start.astype(np.float32)
@@ -381,11 +403,13 @@ def calculate_thickness(start_pt, end_pt, dist_px, contour):
         prev_pt, prev_d = contour[idx_start][0].astype(float), dists[idx_start]
         for i in range(1, n // 2):
             idx = (idx_start + i * step) % n
+     
             pt, d = contour[idx][0].astype(float), dists[idx]
             if d >= dist_px:
                 if d == prev_d: return pt
                 return prev_pt + ((dist_px - prev_d) / (d - prev_d)) * (pt - prev_pt)
             prev_pt, prev_d = pt, d
+        
         return None
     p1, p2 = find_intersection(1), find_intersection(-1)
     if p1 is not None and p2 is not None: return (np.linalg.norm(p1 - p2) / PPM) / 10.0, p1, p2
@@ -432,9 +456,10 @@ def process_measurement(image, crop_name="キュウリ"):
     html = f"""
     <div style="background-color: #ffffff; padding: 20px; border-radius: 12px; border: 1px solid #e0e0e0; color: black;">
         <h3 style="text-align: center; margin-top: 0; color: #2e7d32;">📐 計測・判定結果 ({crop_name})</h3>
-        <p>📏 <b>長さ:</b> {length_cm:.1f} cm</p>
-        <p>⭕ <b>太さ:</b> {avg_thick_cm:.1f} cm</p>
-        <p>〰️ <b>曲がり:</b> {curve_cm:.1f} cm</p>
+        <p>🟨 <b>長さ（黄色い線の長さ）:</b> {length_cm:.1f} cm</p>
+        <p>🟪 <b>端の太さ１（紫の線の長さ）:</b> {head_thick_cm:.1f} cm</p>
+        <p>🟪 <b>端の太さ２（紫の線の長さ）:</b> {tail_thick_cm:.1f} cm</p>
+        <p>🟥 <b>曲がり（赤い線の長さ）:</b> {curve_cm:.1f} cm</p>
         <div style="background-color: {rank_bg}; padding: 12px; text-align: center; font-size: 1.2em; border-radius: 8px; margin-top: 10px;">
             <b>階級: {display_grade}</b>
         </div>
@@ -451,6 +476,7 @@ def get_large_font(font_size: int):
     ]
     for font_name in font_targets:
         try:
+         
             return ImageFont.truetype(font_name, font_size)
         except IOError:
             continue
@@ -473,6 +499,7 @@ def generate_qr_pdf(qr_start: int, qr_end: int, qr_size_mm: int) -> bytes | None
 
     usable_w = a4_w_px - margin_px * 2
     usable_h = a4_h_px - margin_px * 2
+  
     cols = usable_w // tag_w_px
     rows = usable_h // tag_h_px
 
@@ -500,6 +527,7 @@ def generate_qr_pdf(qr_start: int, qr_end: int, qr_size_mm: int) -> bytes | None
             error_correction=qrcode.constants.ERROR_CORRECT_H,
             box_size=10,
             border=4,
+    
         )
         qr.add_data(tag_str)
         qr.make(fit=True)
@@ -512,6 +540,7 @@ def generate_qr_pdf(qr_start: int, qr_end: int, qr_size_mm: int) -> bytes | None
 
         x_idx += 1
         if x_idx >= cols:
+  
             x_idx = 0
             y_idx += 1
 
@@ -519,36 +548,43 @@ def generate_qr_pdf(qr_start: int, qr_end: int, qr_size_mm: int) -> bytes | None
             front_page = Image.new("RGB", (a4_w_px, a4_h_px), "white")
             back_page = Image.new("RGB", (a4_w_px, a4_h_px), "white")
             draw_front = ImageDraw.Draw(front_page)
+           
             draw_back = ImageDraw.Draw(back_page)
 
             for item in page_data:
                 # 表面の座標計算 (余白だけでなく中央寄せのオフセットを適用)
                 fx = start_x_px + item["x_idx"] * tag_w_px + int(5 * mm_to_px)
                 fy = start_y_px + item["y_idx"] * tag_h_px + top_padding
+              
                 front_page.paste(item["qr_img"], (fx, fy))
                 draw_front.rectangle([
                     fx - int(5 * mm_to_px), fy - top_padding,
                     fx + qr_size_px + int(5 * mm_to_px), fy + qr_size_px + bottom_padding
                 ], outline="gray")
+     
                 draw_front.ellipse([
                     fx + qr_size_px // 2 - 10, fy - top_padding + 10,
                     fx + qr_size_px // 2 + 10, fy - top_padding + 30
                 ], outline="black")
 
+          
                 # 裏面の座標計算 (表面とぴったり一致するよう計算)
                 bx_idx = cols - 1 - item["x_idx"]
                 bx = start_x_px + bx_idx * tag_w_px + int(5 * mm_to_px)
                 by = start_y_px + item["y_idx"] * tag_h_px + top_padding
                 draw_back.rectangle([
+    
                     bx - int(5 * mm_to_px), by - top_padding,
                     bx + qr_size_px + int(5 * mm_to_px), by + qr_size_px + bottom_padding
                 ], outline="gray")
                 draw_back.ellipse([
+             
                     bx + qr_size_px // 2 - 10, by - top_padding + 10,
                     bx + qr_size_px // 2 + 10, by - top_padding + 30
                 ], outline="black")
 
                 center_x = bx + qr_size_px // 2
+            
                 center_y = by + qr_size_px // 2
                 draw_back.text((center_x, center_y), item["tag_str"], fill="black", font=font, anchor="mm")
 
@@ -559,6 +595,7 @@ def generate_qr_pdf(qr_start: int, qr_end: int, qr_size_mm: int) -> bytes | None
 
     pdf_bytes = BytesIO()
     if pages:
+    
         pages[0].save(pdf_bytes, format="PDF", save_all=True, append_images=pages[1:])
     return pdf_bytes.getvalue()
 
@@ -589,6 +626,7 @@ tab1, tab2, tab3 = st.tabs(["🌱 生育記録", f"{c_emoji} 収穫・階級判�
 # --- タブ1: 生育記録 ---
 with tab1:
     st.header("🌱 生育記録 (QRスキャン)")
+   
     img_source_qr = st.radio("入力方法", ["カメラ", "アップロード", "サンプル画像 (sample1)"], key="qr_radio")
     
     file_bytes_qr = None
@@ -598,6 +636,7 @@ with tab1:
             img_key = hash(qr_img.getvalue())
             if "record_img_id" not in st.session_state or st.session_state.record_img_id != img_key:
                 st.session_state.record_img_id = img_key
+   
                 st.session_state.record_img_filename = f"scan_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg"
                 st.session_state.temp_record_bytes = qr_img.getvalue()
 
@@ -605,13 +644,14 @@ with tab1:
             file_bytes_qr = np.asarray(bytearray(st.session_state.temp_record_bytes), dtype=np.uint8)
             cam_tag = read_qr_from_bytes(file_bytes_qr)
             cam_item_code = get_tag_info(cam_tag) if cam_tag else None
-            
+       
             st.download_button(
                 label="💾 撮影画像をスマホに保存",
                 data=st.session_state.temp_record_bytes,
                 file_name=st.session_state.record_img_filename,
                 mime="image/jpeg",
                 key="dl_cam_qr",
+  
                 on_click=sync_record_image,
                 args=(cam_item_code, st.session_state.record_img_filename, file_bytes_qr)
             )
@@ -638,12 +678,14 @@ with tab1:
         if tag_id:
             if st.session_state.last_scanned_tag != tag_id:
                 play_notification_sound()
+ 
                 st.session_state.last_scanned_tag = tag_id
                 
             st.success(f"🏷️ タグを認識しました: {tag_id}")
             item_code = get_tag_info(tag_id)
             if not item_code:
                 item_code = register_new_item(tag_id)
+       
                 st.info("新しいアイテムとして登録しました。")
             
             items_df = load_items()
@@ -651,11 +693,13 @@ with tab1:
             item_data = match.iloc[0].to_dict() if not match.empty else {}
             
             def clean_date_str(val):
+     
                 s = str(val).strip()
                 return "" if s == "nan" or s == "None" else s
             def parse_date(d_str):
                 if d_str:
                     try: return pd.to_datetime(d_str).date()
+        
                     except Exception: pass
                 return None
 
@@ -663,31 +707,38 @@ with tab1:
             today_str = datetime.date.today().strftime("%Y-%m-%d")
             
             if tag_id not in st.session_state.processed_qrs:
+            
                 already_scanned = False
                 for i in range(1, date_count + 1):
                     if clean_date_str(item_data.get(f'date_{i}', '')) == today_str:
                         already_scanned = True
+                      
                         break
                 
                 if already_scanned:
                     st.info("✅ 本日読み込み済みです。")
                 else:
                     update_kwargs = {}
+      
                     updated = False
                     target_idx = 1
                     for i in range(1, date_count + 1):
                         if not clean_date_str(item_data.get(f'date_{i}', '')):
+         
                             update_kwargs[f'date_{i}'] = today_str
                             update_kwargs[f'date_{i}_image'] = st.session_state.get('record_img_filename', '')
                             updated = True
+                  
                             target_idx = i
                             break
                     
                     if updated:
+                   
                         update_item_record(item_code, **update_kwargs)
                         st.success(f"🌱 スキャンを検知し、自動でデータベースを更新しました！ (画像名: {update_kwargs[f'date_{target_idx}_image']})")
                         match = load_items().query(f"item_code == '{item_code}'")
                         item_data = match.iloc[0].to_dict() if not match.empty else {}
+        
                 st.session_state.processed_qrs.add(tag_id)
 
             st.write(f"📝 編集対象コード: `{item_code}`")
@@ -695,36 +746,43 @@ with tab1:
             area_opts = [x.strip() for x in st.session_state.settings.get("area_options", "1").split(",") if x.strip()]
             current_area = clean_date_str(item_data.get('area_number', area_opts[0] if area_opts else "1"))
             if current_area not in area_opts: area_opts.insert(0, current_area)
+        
             new_area = st.selectbox("試験エリア番号", area_opts, index=area_opts.index(current_area))
             
             date_labels = st.session_state.settings.get("date_labels", "").split(",")
             cols = st.columns(3)
             for i in range(date_count):
                 lbl = date_labels[i] if i < len(date_labels) else f"日付{i+1}"
+            
                 d_val_str = clean_date_str(item_data.get(f'date_{i+1}', ''))
                 if f"d{i+1}_{item_code}" not in st.session_state:
                     st.session_state[f"d{i+1}_{item_code}"] = parse_date(d_val_str)
                 
                 with cols[i % 3]:
+                
                     st.session_state[f"d{i+1}_{item_code}"] = st.date_input(lbl, value=st.session_state[f"d{i+1}_{item_code}"], key=f"date_input_{i}_{item_code}")
                     if st.button(f"🗑️ {lbl}を消去", key=f"clear_d{i+1}_{item_code}"):
                         st.session_state[f"d{i+1}_{item_code}"] = None
                         widget_key = f"date_input_{i}_{item_code}"
+                 
                         if widget_key in st.session_state:
                             del st.session_state[widget_key]
                         st.rerun()
             
             new_comment = st.text_area("コメント（自由入力）", value=clean_date_str(item_data.get('comment', '')))
+         
             st.markdown("<br>", unsafe_allow_html=True)
             
             if st.button("💾 記録をまとめて更新する", type="primary", use_container_width=True):
                 update_kwargs = {'area_number': str(new_area), 'comment': str(new_comment)}
                 
                 for i in range(date_count):
+            
                     val = st.session_state[f"d{i+1}_{item_code}"]
                     d_str = val.strftime("%Y-%m-%d") if val else ""
                     update_kwargs[f"date_{i+1}"] = d_str
                     if d_str and st.session_state.get('record_img_filename'):
+                   
                         update_kwargs[f"date_{i+1}_image"] = st.session_state.get('record_img_filename', '')
                 
                 update_item_record(item_code, **update_kwargs)
@@ -735,6 +793,7 @@ with tab1:
 
 # --- タブ2: 収穫・階級判定 ---
 with tab2:
+ 
     st.header(f"{c_emoji} 収穫・階級判定 ({c_name})")
     col1, col2 = st.columns(2)
     with col1:
@@ -749,16 +808,19 @@ with tab2:
                     st.session_state.grade_img_filename = f"grade_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg"
                     st.session_state.temp_grade_bytes = c_img.getvalue()
 
+         
             if "temp_grade_bytes" in st.session_state and st.session_state.temp_grade_bytes:
                 file_bytes_grade = np.asarray(bytearray(st.session_state.temp_grade_bytes), dtype=np.uint8)
                 cam_tag_g = read_qr_from_bytes(file_bytes_grade)
                 cam_item_code_g = get_tag_info(cam_tag_g) if cam_tag_g else None
                 
                 st.download_button(
+ 
                     label="💾 撮影画像をスマホに保存",
                     data=st.session_state.temp_grade_bytes,
                     file_name=st.session_state.grade_img_filename,
                     mime="image/jpeg",
+                    
                     key="dl_cam_grade",
                     on_click=sync_grade_image,
                     args=(cam_item_code_g, st.session_state.grade_img_filename, file_bytes_grade)
@@ -766,6 +828,7 @@ with tab2:
 
         elif img_source_grade == "アップロード":
             c_img = st.file_uploader("画像を選択", type=["jpg", "jpeg", "png"], key="grade_upload", on_change=clear_grade_result)
+            
             if c_img: 
                 file_bytes_grade = np.asarray(bytearray(c_img.read()), dtype=np.uint8)
                 st.session_state.grade_img_filename = c_img.name
@@ -773,6 +836,7 @@ with tab2:
             st.info("サンプル画像 (sample2.jpg) を使用します。")
             raw_data = get_image_bytes_from_url(SAMPLE2_URL)
             if raw_data: 
+           
                 file_bytes_grade = np.asarray(bytearray(raw_data), dtype=np.uint8)
                 st.session_state.grade_img_filename = "sample2.jpg"
 
@@ -789,19 +853,23 @@ with tab2:
                 cv_img_rgb = cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB)
                 res_img, html, l_cm, t_cm, c_cm, grade_str, warped = process_measurement(cv_img_rgb, c_name)
                 
+  
                 tag_id = None
                 if l_cm is not None:
                     tag_id = read_qr_from_bytes(file_bytes_grade)
                     if not tag_id and warped is not None:
+               
                         detector = cv2.QRCodeDetector()
                         warped_bgr = cv2.cvtColor(warped, cv2.RGB2BGR)
                         data, _, _ = detector.detectAndDecode(warped_bgr)
                         tag_id = str(data).strip() if data else None
-                
+    
+             
                 st.session_state.grade_result = {
                     'res_img': res_img, 'html': html, 'l_cm': l_cm, 't_cm': t_cm,
                     'c_cm': c_cm, 'grade_str': grade_str, 'tag_id': tag_id
                 }
+  
             else:
                 st.info(f"💡 現在「{c_name}」の画像解析・階級判定ロジックは準備中です。キュウリの計測を行う場合は初期設定で「キュウリ」を選択してください。")
 
@@ -810,10 +878,12 @@ with tab2:
             if res['res_img'] is not None: st.image(res['res_img'], channels="RGB")
             if res['html']: st.markdown(res['html'], unsafe_allow_html=True)
             
+  
             if res['l_cm'] is not None:
                 if res['tag_id']:
                     if st.session_state.last_scanned_tag != res['tag_id']:
                         play_notification_sound()
+                      
                         st.session_state.last_scanned_tag = res['tag_id']
                         
                     st.success(f"✅ タグ【{res['tag_id']}】を検出しました。重さを入力して登録を完了させてください。")
@@ -822,16 +892,20 @@ with tab2:
                         submit_btn = st.form_submit_button("💾 データベースに登録", type="primary")
                         
                         if submit_btn:
+                      
                             item_code = get_tag_info(res['tag_id'])
                             if not item_code: item_code = register_new_item(res['tag_id'])
                             
                             update_kwargs = {
+ 
                                 'length': float(res['l_cm']), 'thickness': float(res['t_cm']),
                                 'curve': float(res['c_cm']), 'grade': str(res['grade_str']),
+                               
                                 'weight': float(harvest_weight),
                                 'grade_image': st.session_state.get('grade_img_filename', '')
                             }
                             
+        
                             update_item_record(item_code, **update_kwargs)
                             st.success(f"🎉 アイテム【{item_code}】の情報を登録しました！ (画像名: {update_kwargs['grade_image']})")
                 else:
@@ -839,6 +913,7 @@ with tab2:
 
     st.divider()
     with st.expander("🔗 QRコードの使いまわし（タグのリンク解除）"):
+ 
         st.write(f"QRコードを再利用して新しい{c_name}に使用する場合、現在のアイテムとの紐づけを解除します。")
         unbind_target_tag = st.text_input("リンク解除するQRタグ番号", key="unbind_tag_input")
         if st.button("🔓 リンク解除を実行", type="secondary"):
@@ -846,6 +921,7 @@ with tab2:
                 if unbind_tag(unbind_target_tag):
                     st.success(f"タグ【{unbind_target_tag}】のリンクを解除しました！")
                 else:
+     
                     st.warning("タグが見つからないか、すでに解除されています。")
             else:
                 st.error("タグ番号を入力してください。")
@@ -859,6 +935,7 @@ with tab3:
         crop_options_list = list(CROP_OPTIONS.keys())
         current_crop = st.session_state.settings.get("crop_name", "キュウリ")
         
+    
         default_index = crop_options_list.index(current_crop) if current_crop in crop_options_list else 0
         selected_crop = st.selectbox("対象作物", crop_options_list, index=default_index)
         selected_emoji = CROP_OPTIONS.get(selected_crop, "🥒")
@@ -877,6 +954,7 @@ with tab3:
             
         st.divider()
         st.write("📍 試験エリア番号の設定")
+   
         area_opts_str = st.text_area("エリア番号のプルダウン中身（カンマ区切りで入力）", value=st.session_state.settings.get("area_options", "1,2,3,4,5,6,7,8,9,10,11,12"))
         
         save_settings = st.form_submit_button("💾 設定を保存して適用", type="primary")
@@ -885,6 +963,7 @@ with tab3:
             new_settings = {
                 "crop_name": selected_crop,
                 "emoji": selected_emoji,
+      
                 "date_count": str(date_count),
                 "date_labels": ",".join(new_labels),
                 "area_options": area_opts_str
@@ -914,10 +993,12 @@ with tab3:
             pdf_data = generate_qr_pdf(qr_start, qr_end, qr_size)
             if pdf_data is None:
                 st.error("指定されたQRコードサイズが大きすぎてA4に配置できません。サイズを小さくしてください。")
+       
             else:
                 st.download_button(
                     label="📥 作成した両面QRコードシート(PDF)をダウンロード",
                     data=pdf_data,
                     file_name=f"qr_tags_{qr_start}_to_{qr_end}_duplex.pdf",
+                  
                     mime="application/pdf"
                 )
